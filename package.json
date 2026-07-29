@@ -1,0 +1,16 @@
+{
+  "name": "3dfromvideo",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node system/index.js",
+    "test": "node system/test/test_undistort.js",
+    "test_line": "node system/test/test_undistort.js"
+  },
+  "author": "Daniel Mieszkowksi",
+  "license": "ISC",
+  "dependencies": {
+    "chokidar": "^5.0.0"
+  }
+}

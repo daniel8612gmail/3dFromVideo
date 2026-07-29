@@ -1,0 +1,9 @@
+checkerboard:
+  corners_x: 6
+  corners_y: 4
+  square_size_mm: 35
+
+processing:
+  frame_step: 15
+  minimum_frames: 20
+  blur_threshold: 80

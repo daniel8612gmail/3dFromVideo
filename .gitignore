@@ -1,0 +1,9 @@
+frames
+frames2sec
+users
+node_modules
+system/models
+test
+system/py/__pycache__
+*.log
+*.dmap
