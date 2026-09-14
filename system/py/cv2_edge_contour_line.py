@@ -38,27 +38,32 @@ detections_file = OUTPUT_DIR / "detections.json"
 
 # Konwersja do skali szarości
 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+lines = []
 
 if not detections_file.exists():
-    edgedetection(img, 0, geometry_dir)
+    lines = edgedetection(img, 0, geometry_dir)
+    objects = [{"id":"0001", "img": img}]
 else:
     detections = json.load(open(OUTPUT_DIR / "detections.json"))
-    for obj in detections["objects"]:
-        obj_id = obj["id"]
-        mask_file = OUTPUT_DIR / obj["mask"]["file"]
-        print(f"Processing object {INPUT_FILE.stem} | {obj_id}")
-
-        # Wczytanie maski
-        mask = cv2.imread(mask_file, cv2.IMREAD_GRAYSCALE)
-        if mask is None:
-            print("Missing mask:", mask_file)
-            continue
-        # upewnienie się że maska ma wartości 0/255
-        mask = np.where(mask > 0,255,0).astype(np.uint8)
-
-        # Wycięcie obiektu
-        edgedetection(img, obj_id, geometry_dir)
+    objects = detections["objects"]
     
+for obj in objects:
+    obj_id = obj["id"]
+    mask_file = OUTPUT_DIR / obj["mask"]["file"]
+    print(f"Processing object {INPUT_FILE.stem} | {obj_id}")
+
+    # Wczytanie maski
+    mask = cv2.imread(mask_file, cv2.IMREAD_GRAYSCALE)
+    if mask is None:
+        print("Missing mask:", mask_file)
+        continue
+    # upewnienie się że maska ma wartości 0/255
+    mask = np.where(mask > 0,255,0).astype(np.uint8)
+
+    # Wycięcie obiektu
+    lines = edgedetection(img, obj_id, geometry_dir)
+
+
 
 elapsed = (time.perf_counter() - start_time)
 minutes = int( elapsed // 60)

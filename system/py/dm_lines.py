@@ -1,18 +1,22 @@
-# dm_lines.py
-
 import numpy as np
-import math
 
 
-# =====================================================
+# ==========================================================
 # Przygotowanie danych LSD
-# =====================================================
+# ==========================================================
 
 def prepare_lsd(lines, widths, prec, nfa):
     """
-    Przygotowanie struktury danych z wyniku LSD.
+    Jednorazowa konwersja wyniku LSD do struktury roboczej.
 
-    Wszystkie kosztowne obliczenia wykonywane tylko raz.
+    Wejście:
+        lines  Nx1x4
+        widths Nx1
+        prec   Nx1
+        nfa    Nx1
+
+    Wynik:
+        słownik z gotowymi cechami
     """
 
     if lines is None:
@@ -33,7 +37,8 @@ def prepare_lsd(lines, widths, prec, nfa):
 
 
     length = np.sqrt(
-        dx*dx + dy*dy
+        dx*dx +
+        dy*dy
     )
 
 
@@ -44,51 +49,75 @@ def prepare_lsd(lines, widths, prec, nfa):
     angle[angle < 0] += 180
 
 
+    #
+    # środek
+    #
 
     cx = (x1+x2)*0.5
     cy = (y1+y2)*0.5
 
 
 
-    widths = widths.reshape(-1)
-    prec   = prec.reshape(-1)
-    nfa    = nfa.reshape(-1)
-
-
-
     #
-    # jakość LSD
-    #
-    # nfa:
-    # małe = lepsze
+    # normalna linii
     #
 
-    quality = np.exp(
-        -np.maximum(nfa,0)
+    theta = np.radians(angle)
+
+
+    nx = np.sin(theta)
+    ny = -np.cos(theta)
+
+
+    rho = (
+        nx*cx +
+        ny*cy
     )
 
-    quality += 1e-6
+
+
+    widths = widths.reshape(-1)
+    prec = prec.reshape(-1)
+    nfa = nfa.reshape(-1)
 
 
 
     #
-    # końcowa waga linii
+    # stabilna jakość LSD
+    #
+
+    nfa_norm = (
+        nfa -
+        np.min(nfa)
+    )
+
+    nfa_norm /= (
+        np.max(nfa_norm)
+        +1e-9
+    )
+
+
+    quality = 1.0 - nfa_norm
+
+
+
+    #
+    # waga końcowa
     #
 
     weight = (
-        length
-        *
-        widths
-        *
-        quality
+        length *
+        (widths+1) *
+        (quality+0.01)
         /
-        (prec+1e-6)
+        (prec+0.01)
     )
+
 
 
     return {
 
-        "lines": lines,
+        "lines":lines,
 
         "x1":x1,
         "y1":y1,
@@ -105,117 +134,98 @@ def prepare_lsd(lines, widths, prec, nfa):
         "cx":cx,
         "cy":cy,
 
+        "nx":nx,
+        "ny":ny,
+
+        "rho":rho,
+
         "width":widths,
         "precision":prec,
         "nfa":nfa,
 
         "quality":quality,
-
         "weight":weight,
 
-        "count":len(lines)
+        "active":
+            np.ones(
+                len(lines),
+                dtype=bool
+            ),
+
+        "id":
+            np.arange(
+                len(lines)
+            )
     }
 
 
 
-# =====================================================
-# Filtr linii
-# =====================================================
+# ==========================================================
+# Filtr aktywnych linii
+# ==========================================================
 
-def filter_lines(data,
-                 min_length=15,
-                 min_quality=None):
+def activate_filter(
+        data,
+        min_length=15
+):
+    """
+    Nie kopiuje danych.
+    Tylko ustawia maskę aktywnych linii.
+    """
 
-    if data is None:
-        return None
-
-
-    mask = data["length"] >= min_length
-
-
-    if min_quality is not None:
-        mask &= (
-            data["quality"]
-            >= min_quality
-        )
-
-
-    result={}
-
-
-    for k,v in data.items():
-
-        if isinstance(v,np.ndarray):
-            result[k]=v[mask]
-
-        else:
-            result[k]=v
-
-
-    result["count"] = len(
-        result["lines"]
+    data["active"] = (
+        data["length"]
+        >=
+        min_length
     )
 
-
-    return result
-
+    return data
 
 
-# =====================================================
+
+# ==========================================================
 # Dominujące kierunki
-# =====================================================
+# ==========================================================
 
 def dominant_directions(
         data,
         top_k=6,
-        angle_bins=180):
+        bins=180
+):
 
-    """
-    Znajduje główne kierunki linii.
-
-    Zwraca listę:
-
-    [
-      {
-       angle,
-       score,
-       indexes
-      }
-    ]
-
-    """
-
-    angles=data["angle"]
-    weights=data["weight"]
+    mask = data["active"]
 
 
-    histogram=np.zeros(
-        angle_bins,
+    angles = data["angle"][mask]
+    weights = data["weight"][mask]
+
+
+    histogram = np.zeros(
+        bins,
         dtype=np.float64
     )
 
 
-    bins=(
-        angles
-        *
-        angle_bins
-        /
+    ids = (
+        angles *
+        bins /
         180
     ).astype(np.int32)
 
 
-    bins=np.clip(
-        bins,
+    ids=np.clip(
+        ids,
         0,
-        angle_bins-1
+        bins-1
     )
 
 
     np.add.at(
         histogram,
-        bins,
+        ids,
         weights
     )
+
 
 
     #
@@ -226,7 +236,7 @@ def dominant_directions(
         [
             0.05,
             0.15,
-            0.6,
+            0.60,
             0.15,
             0.05
         ]
@@ -245,29 +255,25 @@ def dominant_directions(
 
 
 
-    #
-    # lokalne maksima
-    #
-
     peaks=[]
 
 
-    for i in range(angle_bins):
+    for i in range(bins):
 
         if (
             histogram[i]
             >
-            histogram[(i-1)%angle_bins]
+            histogram[(i-1)%bins]
             and
             histogram[i]
             >
-            histogram[(i+1)%angle_bins]
+            histogram[(i+1)%bins]
         ):
 
             peaks.append(
                 (
                     histogram[i],
-                    i*180/angle_bins
+                    i*180/bins
                 )
             )
 
@@ -277,29 +283,41 @@ def dominant_directions(
     )
 
 
-
     result=[]
+
+
+    full_angles=data["angle"]
 
 
     for score,angle in peaks[:top_k]:
 
-
-        delta=np.abs(
-            ((angles-angle+90)%180)-90
+        diff=np.abs(
+            ((full_angles-angle+90)%180)-90
         )
 
 
-        indexes=np.where(
-            delta < 1.5
+        idx=np.where(
+            (
+                diff < 1.5
+            )
+            &
+            mask
         )[0]
 
 
         result.append(
             {
-                "angle":float(angle),
-                "score":float(score),
-                "indexes":indexes,
-                "count":len(indexes)
+                "angle":
+                    float(angle),
+
+                "score":
+                    float(score),
+
+                "indexes":
+                    idx,
+
+                "count":
+                    len(idx)
             }
         )
 
@@ -308,13 +326,14 @@ def dominant_directions(
 
 
 
-# =====================================================
-# Pobranie linii dla kierunku
-# =====================================================
+# ==========================================================
+# Pobranie linii kierunku
+# ==========================================================
 
 def get_direction_lines(
         data,
-        direction):
+        direction
+):
 
     return data["lines"][
         direction["indexes"]
@@ -322,49 +341,13 @@ def get_direction_lines(
 
 
 
-# =====================================================
-# Kąt między liniami
-# =====================================================
+# ==========================================================
+# Statystyka
+# ==========================================================
 
-def angle_difference(a,b):
-
-    d=abs(a-b)
-
-    return min(
-        d,
-        180-d
-    )
-
-
-
-# =====================================================
-# Centrum grupy
-# =====================================================
-
-def group_center(
-        data,
-        indexes):
-
-    return (
-        float(
-            np.mean(
-                data["cx"][indexes]
-            )
-        ),
-        float(
-            np.mean(
-                data["cy"][indexes]
-            )
-        )
-    )
-
-
-
-# =====================================================
-# Debug
-# =====================================================
-
-def print_dominant(directions):
+def print_directions(
+        directions
+):
 
     for i,d in enumerate(directions):
 

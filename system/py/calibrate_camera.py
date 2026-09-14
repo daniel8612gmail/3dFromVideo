@@ -5,6 +5,7 @@ import os
 import glob
 import argparse
 import shutil
+from pathlib import Path
 
 # ---------------------------------
 # Argumenty
@@ -13,15 +14,14 @@ import shutil
 parser = argparse.ArgumentParser()
 
 parser.add_argument(
-    "--root",
-    default="C:/GIT/3dFromVideo",
-    help="root system path"
-)
-
-parser.add_argument(
     "--device",
     required=True,
     help="Device ID, device folder name"
+)
+parser.add_argument(
+    "--user",
+    required=True,
+    help="User ID, user folder name"
 )
 parser.add_argument(
     "--videoFile",
@@ -30,10 +30,9 @@ parser.add_argument(
 
 args = parser.parse_args()
 
-
-ROOT = args.root
 DEVICE_ID = args.device
 VIDEO_FILE = args.videoFile
+USER_ID = args.user
 
 
 def extractFrames(videoPath, framePath, frameSteps):
@@ -69,36 +68,9 @@ def extractFrames(videoPath, framePath, frameSteps):
 # Znalezienie urządzenia
 # ---------------------------------
 
-def find_device(root, device_id):
-
-    pattern = os.path.join(
-        root,
-        "users",
-        "*",
-        "devices",
-        device_id
-    )
-
-    result = glob.glob(pattern)
-
-    if len(result) == 0:
-        raise Exception(
-            "Device not found: "
-            + device_id
-        )
-
-    if len(result) > 1:
-        raise Exception(
-            "Duplicate device found"
-        )
-
-    return result[0]
 
 
-DEVICE_PATH = find_device(
-    ROOT,
-    DEVICE_ID
-)
+DEVICE_PATH = Path(VIDEO_FILE).parents[3]
 
 
 print(
@@ -111,7 +83,7 @@ print(
 # ---------------------------------
 
 CONFIG_FILE = os.path.join(
-    ROOT,
+    Path(VIDEO_FILE).parents[7],
     "system",
     "calibration",
     "calibration.yaml"

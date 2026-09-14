@@ -82,20 +82,22 @@ class VideoProcessor {
         });
     }
 
-    static ExtractFrames(videoPath, outdir = null, fps = 2, callback = null) {
+    static ExtractFrames(videoPath, outdir = null, fps = null, callback = null) {
         return new Promise((resolve, reject) => {
             if (!videoPath.endsWith(".mp4")) return;
 
             outdir ??= sysFile.GetFramesDir(videoPath);
             console.log("Wyodrębniam klatki z:", videoPath, "do:", outdir);
-
             fs.mkdirSync(outdir, { recursive: true });
+            let arg_fps = [];
+            if(fps != null)
+                arg_fps = ["-vf", `fps=${fps}`];
 
             const ffmpeg = spawn("ffmpeg", [
                 "-hwaccel", "cuda",
                 "-i", videoPath,
-                "-vf", `fps=${fps}`,
-                path.join(outdir, "frame_%04d.jpg")
+                ...arg_fps,
+                path.join(outdir, "frame_%04d.png")
             ]);
 
             ffmpeg.stderr.on("data", d =>
@@ -115,12 +117,14 @@ class VideoProcessor {
     }
 
 
-    static StartCalibration(videoFile = null, deviceId = null) {
+    static StartCalibration(videoFile = null, deviceId = null, userId = null) {
         deviceId ??= sysFile.GetDeviceId(videoFile);
+        userId ??= sysFile.GetUserId(videoFile);
         console.log("Start kalibracji dla:", deviceId);
 
         const args = [
-            "--device", deviceId
+            "--device", deviceId,
+            "--user", userId
         ];
 
         if (videoFile)
@@ -233,11 +237,21 @@ class VideoProcessor {
             "-o", outdir.concat("/scene.mvs")
         ]);
     }
+    static SelectFrames(videoPath) {
+        const inputDir = sysFile.GetProjectDir(videoPath) + "\\frames";
+        return this.RunPythonAsync(
+            sysFile.SelectFramesScriptPath,
+            [
+                "-i", inputDir
+            ]
+        );
+    }
 
     static async ProcessNewVideo(videoPath) {
         console.log("Przetwarzam nowe video:", videoPath);
 
-        await this.ExtractFrames(videoPath, null, 15);
+        await this.ExtractFrames(videoPath);
+        await this.SelectFrames(videoPath);
         await this.RunColmap(videoPath);
         await this.RunOpenMVS(videoPath);
     }

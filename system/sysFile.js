@@ -14,6 +14,19 @@ class sysFile{
             );
         return parts[index + 1];
     }
+    static GetUserId(filePath) {
+        const parts =
+            filePath.split(path.sep);
+
+        const index =
+            parts.indexOf("users");
+
+        if (index < 0)
+            throw new Error(
+                "Nie znaleziono katalogu users"
+            );
+        return parts[index + 1];
+    }
 
     static GetDevicePath(filePath) {
         const parts = filePath.split(/[\\/]/);
@@ -71,6 +84,12 @@ class sysFile{
         "system",
         "py",
         "colmap.py"
+    );
+    static SelectFramesScriptPath = path.join(
+        this.RootPath,
+        "system",
+        "py",
+        "select_frames.py"
     );
 
     static createDirIfNotExists = dir => (!fs.existsSync(dir) ? fs.mkdirSync(dir) : undefined);

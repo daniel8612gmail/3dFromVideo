@@ -104,39 +104,8 @@ def edgedetection(img, obj_id, geometry_dir):
         angle_thr=2,
         dist_thr=6
     )   
-    lines,widths,prec,nfa = lsd_res
-    if lines.ndim == 3:
-        segments = lines[:, 0, :]
-    else:
-        segments = lines
-    save_lsd_debug(
-                    img_ch[0],
-                    segments,
-                    nfa,
-                    DEBUG_DIR / f"01.debug_lsd_segments.png"
-                )
-    
-    lsd_data = prepare_lsd(
-        lines,
-        widths,
-        prec,
-        nfa
-    )
+    return lsd_res
 
-
-    lsd_data = filter_lines(
-        lsd_data,
-        min_length=15
-    )
-
-
-    dominant = dominant_directions(
-        lsd_data,
-        top_k=6
-    )
-
-
-    print_dominant(dominant)
     # geometry = process_lines(segments)    
     # print(len(geometry["groups"]))
     # print(len(geometry["corners"]))

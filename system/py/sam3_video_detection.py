@@ -52,8 +52,11 @@ response = predictor.handle_request(
     }
 )
 
-print("Initial response keys:")
-print(response.keys())
+print("Initial response keys:", response.keys())
+import json
+with open("sam3videoResponse.json", "w") as f:
+    json.dump(response, f, default=lambda o: o.__dict__, indent=2)
+
 
 # Propagate through video
 for response in predictor.propagate_in_video(
@@ -64,7 +67,7 @@ for response in predictor.propagate_in_video(
     outputs = response["outputs"]
     # pierwszy raz pokaż strukturę
     if frame_index == 0:
-        print(outputs.keys())
+        print("outputs.keys: ", outputs.keys())
     masks = outputs["out_binary_masks"]
     # Tensor -> numpy
     if hasattr(masks, "cpu"):

@@ -6,6 +6,7 @@ import argparse
 import sqlite3
 from colmap_debug import draw_colmap_features, draw_colmap_3d_points
 
+import argparse
 parser = argparse.ArgumentParser()
 
 parser.add_argument(
@@ -344,22 +345,21 @@ if COMMAND == "export_ply":
     export_points_ply()
     exit()
 if COMMAND == "draw_points":
-    draw_colmap_features(
-        PROJECT / "frames" / "frame_0001.jpg",
-        DATABASE
-    )
-    draw_colmap_3d_points(
-        PROJECT / "frames" / "frame_0001.jpg",
-        SPARSE / "0"
-    )
-    draw_colmap_features(
-        PROJECT / "frames" / "frame_0002.jpg",
-        DATABASE
-    )
-    draw_colmap_3d_points(
-        PROJECT / "frames" / "frame_0002.jpg",
-        SPARSE / "0"
-    )
+    N = 2
+    frames_dir = PROJECT / "frames"
+    frame_files = sorted(
+        [p for p in frames_dir.iterdir() if p.is_file()]
+    )[:N]
+    print(frame_files)
+    for frame in frame_files:
+        draw_colmap_features(
+            frame,
+            DATABASE
+        )
+        draw_colmap_3d_points(
+            frame,
+            SPARSE / "0"
+        )
     exit()
         
 SPARSE.mkdir(exist_ok=True)

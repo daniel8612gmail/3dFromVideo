@@ -23,15 +23,17 @@ import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument(
     "--imgPath",
+    required=True,
     help="Path to frame"
 )
 parser.add_argument(
     "--prompt",
-    required=True,
-    help="What to detect"
+    help="What to detect",
+    default="building"
 )
 args = parser.parse_args()
 IMG_PATH = args.imgPath
+prompt = args.prompt
 start_time = time.perf_counter()
 
 torch.set_float32_matmul_precision("high")
@@ -80,7 +82,7 @@ with torch.autocast(
 
     output = processor.set_text_prompt(
         state=state,
-        prompt="building"
+        prompt=prompt
     )
 masks = output["masks"]
 boxes = output["boxes"]

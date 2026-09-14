@@ -1,3 +1,4 @@
+from pathlib import Path
 
 import numpy as np
 import numpy as np
@@ -136,10 +137,11 @@ def draw_colmap_features(image_path, database_path):
             thickness=1
         )
 
-
-    output = os.path.splitext(image_path)[0] / "_features.png"
-
-    cv2.imwrite(output, img)
+    image_path = Path(image_path)
+    output_dir = image_path.parent / image_path.stem
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output = output_dir / "_features.png"
+    cv2.imwrite(str(output), img)
 
     return output, len(keypoints)
 
@@ -213,13 +215,15 @@ def draw_colmap_3d_points(image_path, sparse_path):
 
             count += 1
 
-
-    output = os.path.splitext(image_path)[0] / "points3D.png"
+    image_path = Path(image_path)
+    output_dir = image_path.parent / image_path.stem
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_file = output_dir / "_points3D.png"
 
     cv2.imwrite(
-        output,
+        output_file,
         img
     )
 
 
-    return output, count
+    return output_file, count
