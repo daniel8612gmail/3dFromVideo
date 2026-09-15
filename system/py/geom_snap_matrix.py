@@ -1,352 +1,828 @@
-# snap_normals_cuda.py
-
+import cv2
+import numpy as np
 import torch
-import torch.nn.functional as F
+from collections import deque
 
 
-NORMAL_ANGLE_DEG = 5.0
-DEPTH_THRESHOLD_RATIO = 0.02
-
-ITERATIONS = 4
-
-# 3x3 = 8 sąsiadów + centrum
-KERNEL_SIZE = 3
-
-# Minimalna liczba zgodnych normalnych,
-# żeby wykonać snap.
-MIN_VOTES = 3
+NORMAL_ANGLE_DEG = 4.0
+MIN_REGION_SIZE = 300
+CONNECTIVITY = 8
 
 
-def normalize_normals(normals):
-    return F.normalize(normals.float(), dim=-1, eps=1e-8)
+def normalize(v):
+    n = np.linalg.norm(v, axis=-1, keepdims=True)
+    return v / np.maximum(n, 1e-8)
 
 
-@torch.no_grad()
-def _get_neighbourhood(x):
-    """
-    x:
-        [H, W, C]
+def region_growing(normals, mask,
+                   angle_deg=NORMAL_ANGLE_DEG,
+                   min_region_size=MIN_REGION_SIZE):
 
-    return:
-        [H, W, 9, C]
-    """
+    # GPU -> CPU
+    normals = normals.detach().float().cpu().numpy()
+    mask = mask.detach().cpu().numpy().astype(bool)
 
-    H, W, C = x.shape
+    h, w, _ = normals.shape
 
-    x = x.permute(2, 0, 1).unsqueeze(0)
+    normals = normalize(normals)
 
-    x = F.pad(
-        x,
-        (1, 1, 1, 1),
-        mode="replicate"
+    # cos(angle)
+    cos_threshold = np.cos(np.deg2rad(angle_deg))
+
+    labels = np.full((h, w), -1, dtype=np.int32)
+    visited = np.zeros((h, w), dtype=np.bool_)
+
+    if CONNECTIVITY == 8:
+        neighbors = [
+            (-1, -1), (-1, 0), (-1, 1),
+            (0, -1),           (0, 1),
+            (1, -1),  (1, 0),  (1, 1)
+        ]
+    else:
+        neighbors = [
+            (-1, 0),
+            (0, -1), (0, 1),
+            (1, 0)
+        ]
+
+    region_id = 0
+    regions = {}
+
+    for y in range(h):
+
+        for x in range(w):
+
+            if not mask[y, x] or visited[y, x]:
+                continue
+
+            # ----------------------------------------
+            # STAŁE ZIARNO REGIONU
+            # ----------------------------------------
+
+            seed_normal = normals[y, x]
+
+            queue = deque()
+            queue.append((y, x))
+
+            visited[y, x] = True
+
+            pixels = []
+
+            while queue:
+
+                cy, cx = queue.popleft()
+
+                pixels.append((cy, cx))
+
+                for dy, dx in neighbors:
+
+                    ny = cy + dy
+                    nx = cx + dx
+
+                    if ny < 0 or ny >= h:
+                        continue
+
+                    if nx < 0 or nx >= w:
+                        continue
+
+                    if visited[ny, nx]:
+                        continue
+
+                    if not mask[ny, nx]:
+                        continue
+
+                    candidate = normals[ny, nx]
+
+                    # --------------------------------
+                    # KLUCZOWE:
+                    #
+                    # porównujemy ze STAŁYM seed_normal
+                    # a nie z normalną poprzedniego piksela
+                    # --------------------------------
+
+                    similarity = np.dot(seed_normal, candidate)
+
+                    if similarity >= cos_threshold:
+
+                        visited[ny, nx] = True
+                        queue.append((ny, nx))
+
+                    else:
+                        # Nie oznaczamy jako visited.
+                        # Może później rozpocząć własny region.
+                        pass
+
+            # ----------------------------------------
+            # ODRZUCAMY MAŁE REGIONY
+            # ----------------------------------------
+
+            if len(pixels) < min_region_size:
+                continue
+
+            for py, px in pixels:
+                labels[py, px] = region_id
+
+            regions[region_id] = pixels
+
+            region_id += 1
+
+    print("Regions found:", region_id)
+
+    return labels, regions
+
+
+def calculate_region_dominants(labels, normals):
+
+    normals = normals.detach().float().cpu().numpy()
+    normals = normalize(normals)
+
+    region_ids = np.unique(labels)
+    region_ids = region_ids[region_ids >= 0]
+
+    dominant = {}
+
+    for region_id in region_ids:
+
+        ys, xs = np.where(labels == region_id)
+
+        if len(ys) == 0:
+            continue
+
+        region_normals = normals[ys, xs]
+
+        # suma wektorów
+        n = np.sum(region_normals, axis=0)
+
+        length = np.linalg.norm(n)
+
+        if length < 1e-8:
+            continue
+
+        n /= length
+
+        dominant[int(region_id)] = n
+
+    return dominant
+
+
+def snap_regions(labels, dominant):
+
+    h, w = labels.shape
+
+    snapped = np.zeros(
+        (h, w, 3),
+        dtype=np.float32
     )
 
-    # [1, C*9, H, W]
-    x = F.unfold(
-        x,
-        kernel_size=3
+    for region_id, normal in dominant.items():
+
+        mask = labels == region_id
+
+        snapped[mask] = normal
+
+    return snapped
+
+
+def extract_boundaries(labels):
+
+    boundaries = {}
+
+    region_ids = np.unique(labels)
+    region_ids = region_ids[region_ids >= 0]
+
+    for region_id in region_ids:
+
+        mask = np.zeros(
+            labels.shape,
+            dtype=np.uint8
+        )
+
+        mask[labels == region_id] = 255
+
+        contours, _ = cv2.findContours(
+            mask,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_NONE
+        )
+
+        if not contours:
+            continue
+
+        # największy kontur
+        contour = max(
+            contours,
+            key=cv2.contourArea
+        )
+
+        boundaries[int(region_id)] = contour
+
+    return boundaries
+
+
+def create_debug_image(labels):
+    if torch.is_tensor(labels):
+        labels = labels.detach().cpu().numpy()
+
+    labels = labels.astype(np.int32)
+
+    h, w = labels.shape
+
+    debug = np.zeros(
+        (h, w, 3),
+        dtype=np.uint8
     )
 
-    # [H, W, 9, C]
-    x = x.squeeze(0)
-    x = x.reshape(C, 9, H, W)
-    x = x.permute(2, 3, 1, 0)
+    rng = np.random.default_rng(12345)
 
-    return x
+    region_ids = np.unique(labels)
+    region_ids = region_ids[region_ids >= 0]
+
+    for region_id in region_ids:
+
+        color = rng.integers(
+            40,
+            255,
+            size=3,
+            dtype=np.uint8
+        )
+
+        debug[labels == region_id] = color
+
+    return debug
 
 
-@torch.no_grad()
-def _get_neighbourhood_mask(mask):
-    """
-    mask:
-        [H, W]
+def segment_normals(normals, mask,
+                    angle_deg=4.0,
+                    min_region_size=300):
 
-    return:
-        [H, W, 9]
-    """
-
-    H, W = mask.shape
-
-    x = mask.float().unsqueeze(0).unsqueeze(0)
-
-    x = F.pad(
-        x,
-        (1, 1, 1, 1),
-        mode="constant",
-        value=0
+    labels, regions = region_growing(
+        normals,
+        mask,
+        angle_deg=angle_deg,
+        min_region_size=min_region_size
     )
 
-    x = F.unfold(
-        x,
-        kernel_size=3
+    dominant = calculate_region_dominants(
+        labels,
+        normals
     )
 
-    x = x.squeeze(0)
+    snapped = snap_regions(
+        labels,
+        dominant
+    )
 
-    x = x.reshape(9, H, W)
-    x = x.permute(1, 2, 0)
+    boundaries = extract_boundaries(
+        labels
+    )
 
-    return x.bool()
-
-
-@torch.no_grad()
-def snap_normals(
-    normals,
-    depth,
-    mask,
-    iterations=ITERATIONS,
-    normal_angle_deg=NORMAL_ANGLE_DEG,
-    depth_threshold_ratio=DEPTH_THRESHOLD_RATIO,
-    min_votes=MIN_VOTES
+    return (
+        labels,
+        snapped,
+        dominant,
+        boundaries
+    )
+    
+    
+def cleanup_regions(
+    labels,
+    min_region_size=300,
+    hole_size=500,
+    simplify_epsilon=3.0
 ):
     """
-    Dominant-normal filter.
-
-    normals:
-        [H,W,3] CUDA
-
-    depth:
-        [H,W] CUDA
-
-    mask:
-        [H,W] CUDA bool
-
-    Returns:
-        [H,W,3]
+    Upraszcza mapę regionów:
+    - usuwa małe dziury,
+    - usuwa małe regiony,
+    - upraszcza granice.
     """
 
-    if not normals.is_cuda:
-        raise RuntimeError(
-            "snap_normals requires CUDA tensors."
+    labels = labels.copy()
+
+    h, w = labels.shape
+
+    # -------------------------------------------------
+    # 1. MAŁE DZIURY
+    # -------------------------------------------------
+
+    region_ids = np.unique(labels)
+    region_ids = region_ids[region_ids >= 0]
+
+    for region_id in region_ids:
+
+        region_mask = np.uint8(labels == region_id)
+
+        contours, hierarchy = cv2.findContours(
+            region_mask,
+            cv2.RETR_CCOMP,
+            cv2.CHAIN_APPROX_SIMPLE
         )
 
-    normals = normalize_normals(normals)
+        if hierarchy is None:
+            continue
 
-    depth = depth.float()
-    mask = mask.bool()
+        hierarchy = hierarchy[0]
 
-    H, W, _ = normals.shape
+        for i, contour in enumerate(contours):
 
-    cos_threshold = torch.cos(
-        torch.tensor(
-            normal_angle_deg,
-            device=normals.device,
-            dtype=torch.float32
-        )
-        * torch.pi
-        / 180.0
-    )
+            # tylko kontury będące dziurami
+            parent = hierarchy[i][3]
 
-    # --------------------------------------------------
-    # Depth threshold
-    # --------------------------------------------------
+            if parent < 0:
+                continue
 
-    valid_depth = depth[mask]
+            area = cv2.contourArea(contour)
 
-    if valid_depth.numel() == 0:
-        return normals
+            if area > hole_size:
+                continue
 
-    median_depth = valid_depth.median()
-
-    depth_threshold = (
-        median_depth *
-        depth_threshold_ratio
-    )
-
-    print(
-        f"Depth threshold: "
-        f"{depth_threshold.item():.6f}"
-    )
-
-    current = normals
-
-    # --------------------------------------------------
-    # Iterations
-    # --------------------------------------------------
-
-    for iteration in range(iterations):
-
-        # ----------------------------------------------
-        # 3x3 normals
-        # ----------------------------------------------
-
-        neighbours = _get_neighbourhood(current)
-
-        # [H,W,9,3]
-
-        neighbour_mask = _get_neighbourhood_mask(mask)
-
-        # [H,W,9]
-
-        # ----------------------------------------------
-        # 3x3 depth
-        # ----------------------------------------------
-
-        depth_neighbours = _get_neighbourhood(
-            depth.unsqueeze(-1)
-        ).squeeze(-1)
-
-        # [H,W,9]
-
-        # ----------------------------------------------
-        # Center
-        # ----------------------------------------------
-
-        center_normal = current.unsqueeze(2)
-
-        center_depth = depth.unsqueeze(2)
-
-        # ----------------------------------------------
-        # Valid neighbours
-        # ----------------------------------------------
-
-        depth_difference = torch.abs(
-            depth_neighbours -
-            center_depth
-        )
-
-        valid_depth_neighbour = (
-            depth_difference <=
-            depth_threshold
-        )
-
-        valid = (
-            neighbour_mask &
-            valid_depth_neighbour &
-            mask.unsqueeze(-1)
-        )
-
-        # ----------------------------------------------
-        # Find dominant candidate
-        # ----------------------------------------------
-
-        best_votes = torch.zeros(
-            (H, W),
-            device=current.device,
-            dtype=torch.int16
-        )
-
-        best_candidate = torch.zeros(
-            (H, W),
-            device=current.device,
-            dtype=torch.long
-        )
-
-        # 9 candidate normals
-        #
-        # We intentionally loop only 9 times.
-        # All pixel calculations remain on CUDA.
-
-        for candidate_index in range(9):
-
-            candidate = neighbours[
-                ..., candidate_index, :
-            ]
-
-            # candidate:
-            # [H,W,3]
-
-            # Compare candidate with every
-            # normal in the 3x3 neighbourhood.
-
-            similarity = (
-                neighbours *
-                candidate.unsqueeze(2)
-            ).sum(dim=-1)
-
-            similar = (
-                similarity >=
-                cos_threshold
+            cv2.drawContours(
+                labels,
+                [contour],
+                -1,
+                int(region_id),
+                thickness=cv2.FILLED
             )
 
-            votes = (
-                similar &
-                valid
-            ).sum(dim=-1)
+    # -------------------------------------------------
+    # 2. MAŁE REGIONY
+    # -------------------------------------------------
 
-            better = (
-                votes >
-                best_votes
-            )
+    region_ids = np.unique(labels)
+    region_ids = region_ids[region_ids >= 0]
 
-            best_votes = torch.where(
-                better,
-                votes,
-                best_votes
-            )
+    for region_id in region_ids:
 
-            best_candidate = torch.where(
-                better,
-                torch.tensor(
-                    candidate_index,
-                    device=current.device
-                ),
-                best_candidate
-            )
+        region_mask = labels == region_id
 
-        # ----------------------------------------------
-        # Select dominant normal
-        # ----------------------------------------------
+        size = np.count_nonzero(region_mask)
 
-        dominant = torch.gather(
+        if size >= min_region_size:
+            continue
+
+        # znajdź sąsiadujące regiony
+        dilated = cv2.dilate(
+            np.uint8(region_mask),
+            np.ones((3, 3), np.uint8)
+        )
+
+        border = (
+            (dilated > 0) &
+            (~region_mask)
+        )
+
+        neighbours = labels[border]
+
+        neighbours = neighbours[neighbours >= 0]
+
+        if len(neighbours) == 0:
+            continue
+
+        # najczęstszy sąsiad
+        values, counts = np.unique(
             neighbours,
-            2,
-            best_candidate
-                .unsqueeze(-1)
-                .unsqueeze(-1)
-                .expand(-1, -1, 1, 3)
-        ).squeeze(2)
-
-        # ----------------------------------------------
-        # Snap only if enough votes
-        # ----------------------------------------------
-
-        should_snap = (
-            mask &
-            (best_votes >= min_votes)
+            return_counts=True
         )
 
-        current = torch.where(
-            should_snap.unsqueeze(-1),
-            dominant,
-            current
+        target = values[np.argmax(counts)]
+
+        labels[region_mask] = target
+
+    # -------------------------------------------------
+    # 3. UPROSZCZENIE GRANIC
+    # -------------------------------------------------
+
+    simplified_boundaries = {}
+
+    region_ids = np.unique(labels)
+    region_ids = region_ids[region_ids >= 0]
+
+    for region_id in region_ids:
+
+        mask = np.uint8(labels == region_id)
+
+        contours, _ = cv2.findContours(
+            mask,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_NONE
         )
 
-        current = normalize_normals(current)
+        if not contours:
+            continue
 
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-
-        snapped_pixels = (
-            should_snap.sum()
-            .item()
+        contour = max(
+            contours,
+            key=cv2.contourArea
         )
+
+        perimeter = cv2.arcLength(
+            contour,
+            True
+        )
+
+        epsilon = simplify_epsilon
+
+        # dodatkowe ograniczenie względem wielkości
+        epsilon = max(
+            epsilon,
+            perimeter * 0.002
+        )
+
+        simplified = cv2.approxPolyDP(
+            contour,
+            epsilon,
+            True
+        )
+
+        simplified_boundaries[int(region_id)] = simplified
+
+    return labels, simplified_boundaries
+
+
+import cv2
+import numpy as np
+
+
+def find_best_normal_regions(
+    normals,
+    mask,
+    steps=20,
+    min_similarity=0.80,
+    max_similarity=0.995,
+    min_region_size=300,
+    min_line_length=30,
+    max_line_gap=5,
+    top_n=3
+):
+    """
+    Szuka najlepszych progów podobieństwa normalnych.
+
+    Wynikiem jest TOP N macierzy regionów.
+
+    labels[y, x]:
+        -1  -> brak regionu
+         0+ -> ID regionu
+
+    Każdy krok oceniany jest na podstawie:
+        - liczby długich odcinków granic,
+        - ich łącznej długości,
+        - długości średniej,
+        - liczby dużych regionów.
+
+    Zwraca listę TOP N wyników.
+    """
+
+    # --------------------------------------------------
+    # NORMALNE -> NUMPY
+    # --------------------------------------------------
+
+    if hasattr(normals, "detach"):
+        normals = normals.detach().float().cpu().numpy()
+
+    if hasattr(mask, "detach"):
+        mask = mask.detach().cpu().numpy()
+
+    normals = np.squeeze(normals)
+    mask = np.squeeze(mask).astype(bool)
+
+    # --------------------------------------------------
+    # NORMALIZACJA
+    # --------------------------------------------------
+
+    length = np.linalg.norm(
+        normals,
+        axis=2,
+        keepdims=True
+    )
+
+    normals = normals / np.maximum(length, 1e-8)
+
+    h, w, _ = normals.shape
+
+    # --------------------------------------------------
+    # PODOBIEŃSTWO SĄSIADÓW
+    # --------------------------------------------------
+
+    horizontal = np.sum(
+        normals[:, :-1] * normals[:, 1:],
+        axis=2
+    )
+
+    vertical = np.sum(
+        normals[:-1] * normals[1:],
+        axis=2
+    )
+
+    horizontal_valid = (
+        mask[:, :-1] &
+        mask[:, 1:]
+    )
+
+    vertical_valid = (
+        mask[:-1] &
+        mask[1:]
+    )
+
+    # --------------------------------------------------
+    # PRZESZUKIWANIE PROGÓW
+    # --------------------------------------------------
+
+    thresholds = np.linspace(
+        min_similarity,
+        max_similarity,
+        steps
+    )
+
+    results = []
+
+    for threshold in thresholds:
+
+        # ==================================================
+        # 1. TWORZYMY POŁĄCZENIA PODOBNYCH NORMALNYCH
+        # ==================================================
+
+        graph = np.zeros(
+            (h, w),
+            dtype=np.uint8
+        )
+
+        # Pionowe sąsiedztwo
+        similar_v = (
+            vertical >= threshold
+        ) & vertical_valid
+
+        # Poziome sąsiedztwo
+        similar_h = (
+            horizontal >= threshold
+        ) & horizontal_valid
+
+        # ==================================================
+        # 2. REGIONY = CONNECTED COMPONENTS
+        # ==================================================
+
+        # Tworzymy obraz krawędzi "odwrotnie":
+        # piksele, które mają podobnych sąsiadów,
+        # zostaną połączone przez flood fill.
+        #
+        # Najpierw każdy piksel dostaje własną etykietę,
+        # potem Union-Find scala podobne sąsiedztwa.
+        # ==================================================
+
+        parent = np.arange(
+            h * w,
+            dtype=np.int32
+        )
+
+        size = np.ones(
+            h * w,
+            dtype=np.int32
+        )
+
+        def find(a):
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+
+        def union(a, b):
+
+            a = find(a)
+            b = find(b)
+
+            if a == b:
+                return
+
+            if size[a] < size[b]:
+                a, b = b, a
+
+            parent[b] = a
+            size[a] += size[b]
+
+        # poziome
+        ys, xs = np.where(similar_h)
+
+        for y, x in zip(ys, xs):
+
+            a = y * w + x
+            b = y * w + x + 1
+
+            union(a, b)
+
+        # pionowe
+        ys, xs = np.where(similar_v)
+
+        for y, x in zip(ys, xs):
+
+            a = y * w + x
+            b = (y + 1) * w + x
+
+            union(a, b)
+
+        # ==================================================
+        # 3. GENERUJEMY LABELS
+        # ==================================================
+
+        labels = np.full(
+            (h, w),
+            -1,
+            dtype=np.int32
+        )
+
+        valid_indices = np.flatnonzero(mask)
+
+        roots = np.array(
+            [find(int(i)) for i in valid_indices],
+            dtype=np.int32
+        )
+
+        unique_roots, inverse, counts = np.unique(
+            roots,
+            return_inverse=True,
+            return_counts=True
+        )
+
+        # tylko odpowiednio duże regiony
+        valid_region = (
+            counts >= min_region_size
+        )
+
+        region_map = np.full(
+            len(unique_roots),
+            -1,
+            dtype=np.int32
+        )
+
+        region_map[
+            valid_region
+        ] = np.arange(
+            np.count_nonzero(valid_region)
+        )
+
+        labels_flat = labels.reshape(-1)
+
+        labels_flat[
+            valid_indices
+        ] = region_map[inverse]
+
+        labels = labels_flat.reshape(h, w)
+
+        # ==================================================
+        # 4. GRANICE REGIONÓW
+        # ==================================================
+
+        boundary = np.zeros(
+            (h, w),
+            dtype=np.uint8
+        )
+
+        # różne etykiety poziomo
+        diff_h = (
+            labels[:, :-1] !=
+            labels[:, 1:]
+        )
+
+        valid_h = (
+            (labels[:, :-1] >= 0) &
+            (labels[:, 1:] >= 0)
+        )
+
+        diff_h &= valid_h
+
+        boundary[:, :-1][diff_h] = 255
+        boundary[:, 1:][diff_h] = 255
+
+        # różne etykiety pionowo
+        diff_v = (
+            labels[:-1] !=
+            labels[1:]
+        )
+
+        valid_v = (
+            (labels[:-1] >= 0) &
+            (labels[1:] >= 0)
+        )
+
+        diff_v &= valid_v
+
+        boundary[:-1][diff_v] = 255
+        boundary[1:][diff_v] = 255
+
+        # ==================================================
+        # 5. ODCINKI GRANIC
+        # ==================================================
+
+        lines = cv2.HoughLinesP(
+            boundary,
+            rho=1,
+            theta=np.pi / 180,
+            threshold=max(
+                10,
+                min_line_length // 2
+            ),
+            minLineLength=min_line_length,
+            maxLineGap=max_line_gap
+        )
+
+        line_lengths = []
+
+        if lines is not None:
+
+            for line in lines[:, 0]:
+
+                x1, y1, x2, y2 = line
+
+                length = np.hypot(
+                    x2 - x1,
+                    y2 - y1
+                )
+
+                if length >= min_line_length:
+                    line_lengths.append(length)
+
+        line_count = len(line_lengths)
+
+        total_length = float(
+            np.sum(line_lengths)
+        )
+
+        avg_length = (
+            total_length / line_count
+            if line_count
+            else 0.0
+        )
+
+        # ==================================================
+        # 6. LICZBA REGIONÓW
+        # ==================================================
+
+        region_count = int(
+            np.count_nonzero(valid_region)
+        )
+
+        # ==================================================
+        # 7. WAGA KROKU
+        # ==================================================
+
+        # Preferujemy:
+        # - długie granice
+        # - kilka dużych regionów
+        # - unikamy masy krótkich odcinków
+        #
+        # Długość ma największe znaczenie.
+        # ==================================================
+
+        score = (
+            total_length
+            * np.sqrt(max(line_count, 1))
+            * np.sqrt(max(region_count, 1))
+        )
+
+        results.append({
+            "threshold": float(threshold),
+
+            # NAJWAŻNIEJSZY WYNIK
+            "labels": labels,
+
+            # pomocniczo
+            "boundary": boundary,
+            "lines": lines,
+
+            "region_count": region_count,
+            "line_count": line_count,
+            "total_length": total_length,
+            "avg_length": avg_length,
+            "score": float(score)
+        })
+
+    # ==================================================
+    # 8. TOP N
+    # ==================================================
+
+    results.sort(
+        key=lambda x: x["score"],
+        reverse=True
+    )
+
+    best = results[:top_n]
+
+    # ==================================================
+    # INFO
+    # ==================================================
+
+    print()
+    print("BEST NORMAL REGION STEPS")
+    print("------------------------")
+
+    for i, r in enumerate(best):
 
         print(
-            f"Iteration "
-            f"{iteration + 1}/{iterations} | "
-            f"snapped: {snapped_pixels}"
+            f"{i + 1}. "
+            f"threshold={r['threshold']:.5f} | "
+            f"regions={r['region_count']} | "
+            f"lines={r['line_count']} | "
+            f"length={r['total_length']:.1f} | "
+            f"avg={r['avg_length']:.1f} | "
+            f"score={r['score']:.1f}"
         )
 
-    return current
-
-
-@torch.no_grad()
-def normals_to_debug_image(normals):
-    """
-    Normal -> RGB PNG data.
-    """
-
-    normals = normalize_normals(normals)
-
-    image = (
-        normals + 1.0
-    ) * 127.5
-
-    image = torch.clamp(
-        image,
-        0,
-        255
-    )
-
-    return image.to(torch.uint8)
+    return best
