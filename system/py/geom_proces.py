@@ -4,11 +4,16 @@ from pathlib import Path
 import cv2
 import torch 
 from geom_snap_matrix import create_debug_image
-from geom_find_best_normal_regions import find_dominant_normal_directions
+from geom_find_best_normal_regions import apply_dominant_normals, find_dominant_normal_directions
 from geom_planes import create_plane_tensor, save_plane_debug
 from geom_generate_poligon_base_on_planes import polygonize_planes, save_polygon_debug
-from geom_plane_group import find_plane_groups, save_plane_groups_debug, save_plane_statistics
+from geom_plane_group import find_plane_groups, save_plane_groups_debug, save_plane_statistics, sort_and_filter
 from geom_normal_base_on_dominant import create_group_normals
+from geom_boundary import find_plane_boundary_directions, save_plane_boundaries_debug
+from geom_poligon_from_boundaries import build_polygons_from_plane_boundaries, save_polygons_debug
+from geom_find_plane_rectangle import find_plane_rectangles
+from geom_rectangle_texture import create_rectangle_textures, save_rectangle_textures
+from geom_save_glb import save_rectangles_to_glb
 
 
 def load_output(path, device="cuda"):
@@ -115,91 +120,145 @@ def process(image_dir, data):
     points = data["points"]
     depth = data["depth"]
     mask = data["mask"]
-    normals = data["normals"]
+    normals = data["normals"] # [H, W, 3]
 
+    OUTPUT_DIR = image_dir.parent.parent / "geometry"
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    
+    # DEBUG image
+    image_path = image_dir.parent / f"{image_dir.name}.png"
+    image = cv2.imread(str(image_path))
 
     # ============================================================
     # 1. ZNAJDŹ DOMINUJĄCE KIERUNKI NORMAL
+    # sprowadza normalne do kilku dominujących kierunków
     # ============================================================
-    (
-        directions,
-        labels,
-        similarity,
-        density
-    ) = find_dominant_normal_directions(
-        normals,
-        mask,
+    # directions: [N, 3] pixel_dirId: [H, W] similarity: [H, W] density: [N]
+    print("Finding dominant normal directions...")
+    ( directions, pixel_dirId, dir_similarity, dir_density ) = find_dominant_normal_directions(
+        normals, mask,
         num_directions=15,
         angle_radius_deg=7.0,
         min_similarity=0.90
     )
-    debug = create_debug_image(labels)
-    OUTPUT_DIR = image_dir.parent.parent / "geometry"
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(
-        OUTPUT_DIR / f"{image_dir.name}_1_regions_by_normals.png",
-        cv2.cvtColor(debug, cv2.COLOR_RGB2BGR)
-    )
     
-    new_normals, group_normals = create_group_normals(
-        normals,
-        labels,
-        mask
-    )
-
-    print("Dominant directions found.")
-        
-    save_dominant_directions_debug(
-        labels,
-        similarity,
-        directions,
-        OUTPUT_DIR / f"{image_dir.name}_2"
-    )
+    logfile = OUTPUT_DIR / f"{image_dir.name}_1_regions_by_normals.png"
+    create_debug_image(pixel_dirId, logfile)
+      
+    #============================================================
+    # 2. Zmień NORMALNE NA PODSTAWIE DOMINUJ
+    # Zapisuje dominujące normalne w tensorze normalnych
+    #===========================================================
     
+    print("Applying dominant normals...")
+    normals_consolidated = directions[pixel_dirId]
     #============================================================
     # Planes tensors
+    # wykrywa płaszczyzny na podstawie dominujących normalnych i punktów 3D
+    # Zwraca [W,H,4] tensor płaszczyzn w formie [nx, ny, nz, d] dla równania płaszczyzn Ax + By + Cz + D = 0
     #============================================================
     print("Creating planes tensor and saving debug images...")
-    planes = create_plane_tensor(points, new_normals, mask)
-    save_plane_debug(
-        planes,
-        mask,
-        OUTPUT_DIR / f"{image_dir.name}_3"
-    )
+    pixel_planes = create_plane_tensor(points, normals_consolidated, mask)
+    print(f"Planes tensor shape: {pixel_planes.shape}")
+    print(f"Planes count: {pixel_planes.shape[0] * pixel_planes.shape[1]}")
+    logfile = OUTPUT_DIR / f"{image_dir.name}_3"
+    save_plane_debug( pixel_planes, mask, logfile )
     
     #===========================================================
     # Plane grouping
+    # grupuje płaszczyzny w oparciu o podobieństwo normalnych i odległość punktów
+    # plane_labels [H, W] - etykiety grup płaszczyzn
+    # plane_counts [N] - liczba punktów w każdej grupie
+    # planes_consolidated [N, 4] [nx, ny, nz, d] - parametry płaszczyzn w formie Ax + By + Cz + D = 0
     #===========================================================
     print("Finding plane groups...")
-    plane_labels, plane_counts, planes_ = find_plane_groups(
-        points,
-        planes,
+    plane_labels, plane_counts, planes_consolidated = find_plane_groups(
+        pixel_planes,
+        pixel_dirId,
+        directions,
         mask,
-        normal_angle_deg=5.0,
-        distance_threshold=0.5,
+        distance_threshold=0.02,
         min_points=300
     )
-    
+
+    #===========================================================
+    # Sort and filter planes
+    # wybranie największych płaszczyzn
+    #===========================================================
+    plane_labels, planes_consolidated, plane_counts = sort_and_filter(plane_labels, planes_consolidated, plane_counts, limit = 10)
+
+    print("Saving plane groups debug images...")
     logfile = OUTPUT_DIR / f"{image_dir.name}_4_plane_groups.txt"
-    save_plane_statistics(
+    save_plane_statistics( plane_labels, plane_counts, planes_consolidated, logfile, top_n=200 )
+    
+    logfile = OUTPUT_DIR / f"{image_dir.name}_4_plane_groups"
+    save_plane_groups_debug( plane_labels, plane_counts, planes_consolidated, image,  logfile, top_n=200 )
+    
+    #===========================================================
+    # Plane rectangles
+    # zwraca prostokątne regiony w obrębie płaszczyzn na podstawie ekstremów x,y,z
+    #===========================================================
+    print("Finding plane rectangles...")
+    rectangles = find_plane_rectangles(
+        points,
         plane_labels,
-        plane_counts,
-        planes_,
-        logfile,
-        top_n=100
+        planes_consolidated
     )
+    print(f"Rectangles found: {len(rectangles)}")
     
-    image_path = image_dir.parent / f"{image_dir.name}.png"
-    image = cv2.imread(str(image_path))
-    
-    save_plane_groups_debug(
-        plane_labels,
-        plane_counts,
-        planes_,
+    logdir = OUTPUT_DIR / f"{image_dir.name}_textures"
+    textures = create_rectangle_textures(
         image,
-        OUTPUT_DIR / f"{image_dir.name}_4_planes",
-        top_n=200
+        points,
+        plane_labels,
+        rectangles,
+        texture_size=256
     )
+    save_rectangle_textures(textures, logdir)
+    
+    print(f"Textures created: {len(textures)}")
+    
+    save_rectangles_to_glb(
+        rectangles,
+        textures,
+        OUTPUT_DIR / f"{image_dir.name}_planes.glb",
+    )
+    
+    exit()
+    return
+    #===========================================================
+    # Boundary detection
+    # wykrywa granice między płaszczyznami i zapisuje ich kierunki
+    #===========================================================
+    print("Finding plane boundary directions...")
+    boundaries = find_plane_boundary_directions(
+        plane_labels,
+        min_boundary_pixels=20,
+        num_directions=18
+    )
+    print(f"Boundaries found: {len(boundaries)}")
+    save_plane_boundaries_debug(
+        image,
+        boundaries,
+        OUTPUT_DIR / f"{image_dir.name}_5_boundaries.png",
+        top_n=100,
+        line_thickness=1,
+    )
+    
+    polygons = build_polygons_from_plane_boundaries(
+        plane_labels,
+        boundaries,
+        max_edges_per_plane=8,
+        max_vertices=10,
+        min_edge_length=30.0,
+        intersection_tolerance=5.0
+    )
+    save_polygons_debug(
+        image,
+        polygons[:50],
+        OUTPUT_DIR / f"{image_dir.name}_6_polygons.png",
+    )
+    
     return
     #===========================================================
     # Polygonization

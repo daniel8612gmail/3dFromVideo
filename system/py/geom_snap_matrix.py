@@ -219,7 +219,7 @@ def extract_boundaries(labels):
     return boundaries
 
 
-def create_debug_image(labels):
+def create_debug_image(labels, logfile=None):
     if torch.is_tensor(labels):
         labels = labels.detach().cpu().numpy()
 
@@ -248,6 +248,10 @@ def create_debug_image(labels):
 
         debug[labels == region_id] = color
 
+    cv2.imwrite(
+        logfile,
+        cv2.cvtColor(debug, cv2.COLOR_RGB2BGR)
+    )
     return debug
 
 

@@ -47,5 +47,6 @@ def create_group_normals(
     new_normals[valid] = group_normals[
         flat_labels[valid]
     ]
+    normals = new_normals.reshape(original_shape)
 
-    return new_normals.reshape(original_shape), group_normals
+    return normals, group_normals

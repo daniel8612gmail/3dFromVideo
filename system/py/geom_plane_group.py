@@ -1,293 +1,196 @@
-import math
 import torch
 import torch.nn.functional as F
 
-
 @torch.no_grad()
 def find_plane_groups(
-    points,
     planes,
+    direction_labels,
+    directions,
     mask,
-    normal_angle_deg=5.0,
     distance_threshold=0.02,
-    min_points=300
+    min_points=300,
 ):
-    if not points.is_cuda:
-        raise ValueError("points must be CUDA")
-
     if not planes.is_cuda:
         raise ValueError("planes must be CUDA")
+
+    if not direction_labels.is_cuda:
+        raise ValueError("direction_labels must be CUDA")
+
+    if not directions.is_cuda:
+        raise ValueError("directions must be CUDA")
 
     if not mask.is_cuda:
         raise ValueError("mask must be CUDA")
 
-    if points.ndim != 3 or points.shape[-1] != 3:
-        raise ValueError("points must have shape [H,W,3]")
-
     if planes.ndim != 3 or planes.shape[-1] != 4:
         raise ValueError("planes must have shape [H,W,4]")
 
-    if points.shape[:2] != planes.shape[:2]:
-        raise ValueError("points and planes must have the same H,W")
+    if direction_labels.shape != planes.shape[:2]:
+        raise ValueError(
+            "direction_labels must have shape [H,W]"
+        )
 
-    if mask.shape != points.shape[:2]:
-        raise ValueError("mask must have shape [H,W]")
+    if mask.shape != planes.shape[:2]:
+        raise ValueError(
+            "mask must have shape [H,W]"
+        )
 
-    device = points.device
+    device = planes.device
+    dtype = planes.dtype
 
-    H, W = mask.shape
+    h, w = mask.shape
 
     valid = (
         mask.bool()
-        & torch.isfinite(points).all(dim=-1)
+        & (direction_labels >= 0)
         & torch.isfinite(planes).all(dim=-1)
     )
 
-    if not valid.any():
-        return (
-            torch.full(
-                (H, W),
-                -1,
-                dtype=torch.long,
-                device=device
-            ),
-            torch.empty(
-                0,
-                dtype=torch.long,
-                device=device
-            ),
-            torch.empty(
-                0,
-                4,
-                dtype=planes.dtype,
-                device=device
-            )
-        )
-
-    p = points[valid]
-    plane = planes[valid]
-
-    n = F.normalize(
-        plane[:, :3],
-        dim=1
-    )
-
-    d = plane[:, 3]
-
-    dominant_axis = torch.argmax(
-        torch.abs(n),
-        dim=1
-    )
-
-    axis_sign = torch.gather(
-        n,
-        1,
-        dominant_axis[:, None]
-    ).squeeze(1)
-
-    flip = axis_sign < 0
-
-    n = torch.where(
-        flip[:, None],
-        -n,
-        n
-    )
-
-    d = torch.where(
-        flip,
-        -d,
-        d
-    )
-
-    angle_step = math.radians(normal_angle_deg)
-
-    normal_step = 2.0 * math.sin(
-        angle_step * 0.5
-    )
-
-    normal_step = max(
-        normal_step,
-        1e-4
-    )
-
-    qn = torch.round(
-        n / normal_step
-    ).to(torch.int32)
-
-    d_step = max(
-        distance_threshold,
-        1e-5
-    )
-
-    qd = torch.round(
-        d / d_step
-    ).to(torch.int32)
-
-    qn = qn.to(torch.int64)
-    qd = qd.to(torch.int64)
-
-    min_int = torch.iinfo(torch.int32).min
-
-    qn = qn.clamp(
-        min_int,
-        -min_int - 1
-    )
-
-    qd = qd.clamp(
-        min_int,
-        -min_int - 1
-    )
-
-    offset = 1000000
-
-    key = (
-        (qn[:, 0] + offset)
-        * 4000000000000
-        +
-        (qn[:, 1] + offset)
-        * 2000000
-        +
-        (qn[:, 2] + offset)
-        * 1000
-        +
-        (qd + offset)
-    )
-
-    unique_key, inverse, counts = torch.unique(
-        key,
-        return_inverse=True,
-        return_counts=True
-    )
-
-    valid_groups = counts >= min_points
-
-    if not valid_groups.any():
-        return (
-            torch.full(
-                (H, W),
-                -1,
-                dtype=torch.long,
-                device=device
-            ),
-            torch.empty(
-                0,
-                dtype=torch.long,
-                device=device
-            ),
-            torch.empty(
-                0,
-                4,
-                dtype=planes.dtype,
-                device=device
-            )
-        )
-
-    group_ids = torch.nonzero(
-        valid_groups,
-        as_tuple=False
-    ).squeeze(1)
-
-    new_group_id = torch.full(
-        (unique_key.shape[0],),
+    plane_labels = torch.full(
+        (h, w),
         -1,
         dtype=torch.long,
         device=device
     )
 
-    new_group_id[group_ids] = torch.arange(
-        group_ids.shape[0],
-        device=device,
-        dtype=torch.long
-    )
+    d_map = planes[..., 3]
 
-    labels_valid = new_group_id[inverse]
+    group_counts = []
+    group_d_sums = []
+    group_direction_ids = []
 
-    num_groups = group_ids.shape[0]
+    group_offset = 0
 
-    group_normal_sum = torch.zeros(
-        num_groups,
-        3,
-        dtype=n.dtype,
-        device=device
-    )
+    num_directions = directions.shape[0]
 
-    group_d_sum = torch.zeros(
-        num_groups,
-        dtype=d.dtype,
-        device=device
-    )
+    for direction_id in range(num_directions):
 
-    group_normal_sum.index_add_(
-        0,
-        labels_valid[labels_valid >= 0],
-        n[labels_valid >= 0]
-    )
-
-    group_d_sum.index_add_(
-        0,
-        labels_valid[labels_valid >= 0],
-        d[labels_valid >= 0]
-    )
-
-    group_counts = torch.bincount(
-        labels_valid[labels_valid >= 0],
-        minlength=num_groups
-    ).to(n.dtype)
-
-    group_normals = F.normalize(
-        group_normal_sum
-        /
-        group_counts.clamp_min(1).unsqueeze(1),
-        dim=1
-    )
-
-    group_d = (
-        group_d_sum
-        /
-        group_counts.clamp_min(1)
-    )
-
-    group_planes = torch.cat(
-        (
-            group_normals,
-            group_d[:, None]
-        ),
-        dim=1
-    )
-
-    # Rzeczywisty błąd punktu względem grupowej płaszczyzny
-    group_n = group_normals[labels_valid.clamp_min(0)]
-    group_d_value = group_d[labels_valid.clamp_min(0)]
-
-    point_error = torch.abs(
-        (p * group_n).sum(dim=1)
-        +
-        group_d_value
-    )
-
-    labels_valid = torch.where(
-        point_error <= distance_threshold,
-        labels_valid,
-        torch.full_like(
-            labels_valid,
-            -1
+        select = (
+            valid
+            & (direction_labels == direction_id)
         )
-    )
 
-    final_counts = torch.bincount(
-        labels_valid[labels_valid >= 0],
-        minlength=num_groups
-    )
+        if not bool(select.any().item()):
+            continue
 
-    keep = final_counts >= min_points
+        flat_indices = torch.nonzero(
+            select.reshape(-1),
+            as_tuple=False
+        ).squeeze(1)
 
-    if not keep.any():
-        return (
+        values = d_map.reshape(-1)[flat_indices]
+
+        order = torch.argsort(values)
+
+        values = values[order]
+        flat_indices = flat_indices[order]
+
+        breaks = torch.zeros(
+            values.shape[0],
+            dtype=torch.bool,
+            device=device
+        )
+
+        breaks[0] = True
+
+        if values.shape[0] > 1:
+            breaks[1:] = (
+                values[1:] - values[:-1]
+                > distance_threshold
+            )
+
+        local_group_ids = (
+            torch.cumsum(
+                breaks.to(torch.long),
+                dim=0
+            ) - 1
+        )
+
+        local_group_count = int(
+            local_group_ids[-1].item()
+        ) + 1
+
+        global_group_ids = (
+            local_group_ids + group_offset
+        )
+
+        plane_labels.reshape(-1)[
+            flat_indices
+        ] = global_group_ids
+
+        local_counts = torch.bincount(
+            local_group_ids,
+            minlength=local_group_count
+        )
+
+        local_d_sums = torch.zeros(
+            local_group_count,
+            dtype=dtype,
+            device=device
+        )
+
+        local_d_sums.scatter_add_(
+            0,
+            local_group_ids,
+            values
+        )
+
+        group_counts.append(
+            local_counts
+        )
+
+        group_d_sums.append(
+            local_d_sums
+        )
+
+        group_direction_ids.append(
             torch.full(
-                (H, W),
-                -1,
+                (local_group_count,),
+                direction_id,
                 dtype=torch.long,
                 device=device
+            )
+        )
+
+        group_offset += local_group_count
+
+    if group_offset == 0:
+        return (
+            plane_labels,
+            torch.empty(
+                0,
+                dtype=torch.long,
+                device=device
+            ),
+            torch.empty(
+                0,
+                4,
+                dtype=dtype,
+                device=device
+            )
+        )
+
+    group_counts = torch.cat(
+        group_counts
+    )
+
+    group_d_sums = torch.cat(
+        group_d_sums
+    )
+
+    group_direction_ids = torch.cat(
+        group_direction_ids
+    )
+
+    keep = (
+        group_counts >= min_points
+    )
+
+    if not bool(keep.any().item()):
+        return (
+            torch.full_like(
+                plane_labels,
+                -1
             ),
             torch.empty(
                 0,
@@ -297,7 +200,7 @@ def find_plane_groups(
             torch.empty(
                 0,
                 4,
-                dtype=planes.dtype,
+                dtype=dtype,
                 device=device
             )
         )
@@ -307,67 +210,126 @@ def find_plane_groups(
         as_tuple=False
     ).squeeze(1)
 
+    plane_counts = group_counts[kept_ids]
+
+    plane_d = (
+        group_d_sums[kept_ids]
+        / plane_counts.to(dtype)
+    )
+
+    plane_direction_ids = (
+        group_direction_ids[kept_ids]
+    )
+
+    result_normals = directions[
+        plane_direction_ids
+    ].to(dtype)
+
+    result_planes = torch.cat(
+        (
+            result_normals,
+            plane_d[:, None]
+        ),
+        dim=1
+    )
+
     remap = torch.full(
-        (num_groups,),
+        (group_offset,),
         -1,
         dtype=torch.long,
         device=device
     )
 
     remap[kept_ids] = torch.arange(
-        kept_ids.shape[0],
-        device=device,
-        dtype=torch.long
+        kept_ids.numel(),
+        dtype=torch.long,
+        device=device
     )
 
-    labels_valid = remap[
-        labels_valid.clamp_min(0)
+    flat_labels = plane_labels.reshape(-1)
+
+    valid_labels = (
+        flat_labels >= 0
+    )
+
+    flat_labels[valid_labels] = remap[
+        flat_labels[valid_labels]
     ]
 
-    valid_after = labels_valid >= 0
-
-    labels_valid = torch.where(
-        valid_after,
-        labels_valid,
-        torch.full_like(
-            labels_valid,
-            -1
-        )
+    sort_order = torch.argsort(
+        plane_counts,
+        descending=True
     )
 
-    final_planes = group_planes[kept_ids]
+    plane_counts = plane_counts[
+        sort_order
+    ]
 
-    final_counts = torch.bincount(
-        labels_valid[valid_after],
-        minlength=kept_ids.shape[0]
-    )
+    result_planes = result_planes[
+        sort_order
+    ]
 
-    plane_labels = torch.full(
-        (H, W),
+    sorted_remap = torch.full(
+        (sort_order.numel(),),
         -1,
         dtype=torch.long,
         device=device
     )
 
-    flat_labels = plane_labels.view(-1)
+    sorted_remap[
+        sort_order
+    ] = torch.arange(
+        sort_order.numel(),
+        dtype=torch.long,
+        device=device
+    )
 
-    valid_indices = torch.nonzero(
-        valid.reshape(-1),
-        as_tuple=False
-    ).squeeze(1)
+    valid_labels = (
+        flat_labels >= 0
+    )
 
-    flat_labels[
-        valid_indices
-    ] = labels_valid
+    flat_labels[valid_labels] = sorted_remap[
+        flat_labels[valid_labels]
+    ]
 
-    plane_labels = flat_labels.reshape(H, W)
+    plane_labels = flat_labels.reshape(
+        h,
+        w
+    )
 
     return (
         plane_labels,
-        final_counts,
-        final_planes
+        plane_counts,
+        result_planes
     )
     
+    
+#============================================================
+# Sort and filter planes by count
+#============================================================
+
+
+def sort_and_filter(plane_labels, planes, plane_counts, limit = 5):
+    top_indices = torch.argsort(
+        plane_counts,
+        descending=True
+    )[:limit]
+
+    top_planes = planes[top_indices]
+
+    new_plane_labels = torch.full_like(
+        plane_labels,
+        -1
+    )
+
+    for new_id, old_id in enumerate(top_indices):
+        new_plane_labels[
+            plane_labels == old_id
+        ] = new_id
+
+    return new_plane_labels, top_planes, plane_counts[top_indices]
+
+
 #============================================================
 # Debug
 #============================================================

@@ -350,3 +350,54 @@ def find_dominant_normal_directions(
         best_similarity,
         density_result
     )
+    
+    
+def apply_dominant_normals(
+    normals,
+    directions,
+    pixel_dirId,
+    dir_similarity=None,
+    min_similarity=0.90,
+):
+    """
+    Zastępuje normalną każdego piksela odpowiadającym jej
+    dominującym kierunkiem.
+
+    Parametry:
+        normals:
+            Tensor [H, W, 3] z oryginalnymi normalnymi.
+
+        directions:
+            Tensor [N, 3] z dominującymi kierunkami normalnych.
+
+        pixel_dirId:
+            Tensor [H, W] z ID kierunku dla każdego piksela.
+            Wartość < 0 oznacza brak przypisanego kierunku.
+
+        dir_similarity:
+            Tensor [H, W] z podobieństwem piksela do przypisanego
+            kierunku. Jeśli None, wszystkie przypisane piksele są używane.
+
+        min_similarity:
+            Minimalne podobieństwo wymagane do zastąpienia normalnej.
+
+    Zwraca:
+        new_normals:
+            Tensor [H, W, 3].
+    """
+
+    new_normals = normals.clone()
+
+    valid = pixel_dirId >= 0
+
+    if dir_similarity is not None:
+        valid &= dir_similarity >= min_similarity
+
+    if not valid.any():
+        return new_normals
+
+    dir_ids = pixel_dirId[valid].long()
+
+    new_normals[valid] = directions[dir_ids]
+
+    return new_normals
