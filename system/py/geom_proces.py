@@ -4,16 +4,16 @@ from pathlib import Path
 import cv2
 import torch 
 from geom_snap_matrix import create_debug_image
-from geom_find_best_normal_regions import apply_dominant_normals, find_dominant_normal_directions
+from geom_find_best_normal_regions import filter_top_directions, find_dominant_normal_directions
 from geom_planes import create_plane_tensor, save_plane_debug
-from geom_generate_poligon_base_on_planes import polygonize_planes, save_polygon_debug
+from geom_generate_poligon_base_on_planes import polygonize_planes
 from geom_plane_group import find_plane_groups, save_plane_groups_debug, save_plane_statistics, sort_and_filter
-from geom_normal_base_on_dominant import create_group_normals
 from geom_boundary import find_plane_boundary_directions, save_plane_boundaries_debug
 from geom_poligon_from_boundaries import build_polygons_from_plane_boundaries, save_polygons_debug
 from geom_find_plane_rectangle import find_plane_rectangles
 from geom_rectangle_texture import create_rectangle_textures, save_rectangle_textures
 from geom_save_glb import save_rectangles_to_glb
+from save_glb import save_dominant_normal_pixels_to_glb
 
 
 def load_output(path, device="cuda"):
@@ -142,30 +142,55 @@ def process(image_dir, data):
         min_similarity=0.90
     )
     
+    # directions, pixel_dirId, dir_similarity, dir_density = filter_top_directions(
+    #     directions,
+    #     pixel_dirId,
+    #     dir_similarity,
+    #     dir_density,
+    #     top_n=2
+    # )
+    
     logfile = OUTPUT_DIR / f"{image_dir.name}_1_regions_by_normals.png"
     create_debug_image(pixel_dirId, logfile)
       
     #============================================================
     # 2. Zmień NORMALNE NA PODSTAWIE DOMINUJ
     # Zapisuje dominujące normalne w tensorze normalnych
+    # normals_consolidated: [H, W, 3]
     #===========================================================
-    
     print("Applying dominant normals...")
-    normals_consolidated = directions[pixel_dirId]
+    normals_consolidated = torch.zeros_like(normals)
+    valid = pixel_dirId >= 0
+    normals_consolidated[valid] = directions[pixel_dirId[valid]]
+
+    # Debug
+    save_dominant_normal_pixels_to_glb(
+        points,
+        normals_consolidated,
+        OUTPUT_DIR / f"{image_dir.name}_dominant_normal_pixels.glb",
+        size=0.05,
+    )
+    
     #============================================================
-    # Planes tensors
+    # 3. Planes tensors
     # wykrywa płaszczyzny na podstawie dominujących normalnych i punktów 3D
     # Zwraca [W,H,4] tensor płaszczyzn w formie [nx, ny, nz, d] dla równania płaszczyzn Ax + By + Cz + D = 0
     #============================================================
     print("Creating planes tensor and saving debug images...")
-    pixel_planes = create_plane_tensor(points, normals_consolidated, mask)
+    pixel_planes = create_plane_tensor(points, normals_consolidated)
+    
+    
+    # import trimesh
+    # scene = trimesh.load(OUTPUT_DIR / f"{image_dir.name}_pixel_planes.glb")
+    # scene.show()
+    
     print(f"Planes tensor shape: {pixel_planes.shape}")
     print(f"Planes count: {pixel_planes.shape[0] * pixel_planes.shape[1]}")
     logfile = OUTPUT_DIR / f"{image_dir.name}_3"
     save_plane_debug( pixel_planes, mask, logfile )
     
     #===========================================================
-    # Plane grouping
+    # 4. Plane grouping
     # grupuje płaszczyzny w oparciu o podobieństwo normalnych i odległość punktów
     # plane_labels [H, W] - etykiety grup płaszczyzn
     # plane_counts [N] - liczba punktów w każdej grupie
@@ -174,10 +199,8 @@ def process(image_dir, data):
     print("Finding plane groups...")
     plane_labels, plane_counts, planes_consolidated = find_plane_groups(
         pixel_planes,
-        pixel_dirId,
-        directions,
-        mask,
-        distance_threshold=0.02,
+        normals_consolidated,
+        distance_threshold=0.002,
         min_points=300
     )
 
@@ -185,14 +208,19 @@ def process(image_dir, data):
     # Sort and filter planes
     # wybranie największych płaszczyzn
     #===========================================================
-    plane_labels, planes_consolidated, plane_counts = sort_and_filter(plane_labels, planes_consolidated, plane_counts, limit = 10)
+    plane_labels, planes_consolidated, plane_counts = sort_and_filter(
+        plane_labels, 
+        planes_consolidated, 
+        plane_counts, 
+        limit = 100
+    )
 
     print("Saving plane groups debug images...")
     logfile = OUTPUT_DIR / f"{image_dir.name}_4_plane_groups.txt"
-    save_plane_statistics( plane_labels, plane_counts, planes_consolidated, logfile, top_n=200 )
+    save_plane_statistics( plane_labels, plane_counts, planes_consolidated, logfile, top_n=2000 )
     
     logfile = OUTPUT_DIR / f"{image_dir.name}_4_plane_groups"
-    save_plane_groups_debug( plane_labels, plane_counts, planes_consolidated, image,  logfile, top_n=200 )
+    save_plane_groups_debug( plane_labels, plane_counts, planes_consolidated, image,  logfile, top_n=2000 )
     
     #===========================================================
     # Plane rectangles

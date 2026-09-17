@@ -401,3 +401,47 @@ def apply_dominant_normals(
     new_normals[valid] = directions[dir_ids]
 
     return new_normals
+
+def filter_top_directions(
+    directions,
+    pixel_dirId,
+    dir_similarity,
+    dir_density,
+    top_n=10,
+):
+    top_n = min(top_n, directions.shape[0])
+
+    top_ids = torch.argsort(
+        dir_density,
+        descending=True
+    )[:top_n]
+
+    mapping = torch.full(
+        (directions.shape[0],),
+        -1,
+        dtype=torch.long,
+        device=pixel_dirId.device
+    )
+    mapping[top_ids] = torch.arange(
+        top_n,
+        device=pixel_dirId.device
+    )
+
+    new_pixel_dirId = torch.full_like(pixel_dirId, -1)
+
+    valid = pixel_dirId >= 0
+    new_pixel_dirId[valid] = mapping[pixel_dirId[valid]]
+
+    keep = new_pixel_dirId >= 0
+
+    new_dir_similarity = torch.zeros_like(dir_similarity)
+
+    if dir_similarity is not None:
+        new_dir_similarity[keep] = dir_similarity[keep]
+
+    return (
+        directions[top_ids],
+        new_pixel_dirId,
+        new_dir_similarity,
+        dir_density[top_ids],
+    )

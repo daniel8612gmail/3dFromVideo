@@ -3,39 +3,13 @@ import torch.nn.functional as F
 
 
 @torch.no_grad()
-def create_plane_tensor(points, normals, mask=None):
-    """
-    points  : [H, W, 3] CUDA
-    normals : [H, W, 3] CUDA
-    mask    : [H, W]    CUDA / bool
-
-    return:
-        planes : [H, W, 4] CUDA
-                 [nx, ny, nz, d]
-
-    Równanie:
-        nx * X + ny * Y + nz * Z + d = 0
-    """
-
-    # normalizacja normalnych
-    normals = F.normalize(normals.float(), dim=-1)
+def create_plane_tensor(points, normals):
     points = points.float()
+    normals = F.normalize(normals.float(), dim=-1)
 
-    # d = -n · P
     d = -(normals * points).sum(dim=-1, keepdim=True)
 
-    # [H,W,3] + [H,W,1] -> [H,W,4]
-    planes = torch.cat(
-        (normals, d),
-        dim=-1
-    )
-
-    # niepoprawne piksele
-    if mask is not None:
-        planes = planes.clone()
-        planes[~mask] = 0.0
-
-    return planes
+    return torch.cat((normals, d), dim=-1)
 
 def save_plane_debug(planes, mask, output_path):
     import torch
@@ -106,3 +80,6 @@ def save_plane_debug(planes, mask, output_path):
         str(output_path) + "_PlaneD.png",
         d_img
     )
+    
+
+
