@@ -1,0 +1,12 @@
+# ============================================================
+# Blokada bezpośredniego dostępu do katalogu data/
+# ============================================================
+
+<IfModule mod_authz_core.c>
+
+    # Apache 2.4+
+    <Directory "data">
+        Require all denied
+    </Directory>
+
+</IfModule>
