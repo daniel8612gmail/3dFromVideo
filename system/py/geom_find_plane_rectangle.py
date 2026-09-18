@@ -30,27 +30,36 @@ def find_plane_rectangles(
             dtype=points.dtype
         )
 
-        normal = normal / torch.linalg.norm(normal)
+        normal_length = torch.linalg.norm(normal)
 
-        ref = torch.tensor(
-            [1.0, 0.0, 0.0],
-            device=points.device,
-            dtype=points.dtype
-        )
+        if normal_length < 1e-8:
+            rectangles.append(None)
+            continue
 
-        if torch.abs(torch.dot(normal, ref)) > 0.9:
+        normal = normal / normal_length
+
+        # Wybór wektora referencyjnego nie równoległego do normalnej
+        if torch.abs(normal[0]) < 0.9:
+            ref = torch.tensor(
+                [1.0, 0.0, 0.0],
+                device=points.device,
+                dtype=points.dtype
+            )
+        else:
             ref = torch.tensor(
                 [0.0, 1.0, 0.0],
                 device=points.device,
                 dtype=points.dtype
             )
 
+        # Osie lokalnego układu płaszczyzny
         u = torch.cross(normal, ref, dim=0)
-        u = u / torch.linalg.norm(u)
+        u = u / torch.linalg.norm(u).clamp_min(1e-8)
 
         v = torch.cross(normal, u, dim=0)
-        v = v / torch.linalg.norm(v)
+        v = v / torch.linalg.norm(v).clamp_min(1e-8)
 
+        # Współrzędne punktów w układzie płaszczyzny
         relative = plane_points - center
 
         U = torch.sum(relative * u, dim=1)
@@ -61,6 +70,7 @@ def find_plane_rectangles(
         v_min = V.min()
         v_max = V.max()
 
+        # Prostokąt w lokalnym układzie płaszczyzny
         rectangle = torch.stack([
             center + u * u_min + v * v_min,
             center + u * u_max + v * v_min,
@@ -68,6 +78,7 @@ def find_plane_rectangles(
             center + u * u_min + v * v_max,
         ])
 
+        # Sprawdzenie rzeczywistego kierunku normalnej prostokąta
         rectangle_normal = torch.cross(
             rectangle[1] - rectangle[0],
             rectangle[2] - rectangle[0],
@@ -76,10 +87,18 @@ def find_plane_rectangles(
 
         rectangle_normal = rectangle_normal / torch.linalg.norm(
             rectangle_normal
-        )
+        ).clamp_min(1e-8)
 
+        # Wymuszenie zgodności windingu z normalną płaszczyzny
         if torch.dot(rectangle_normal, normal) < 0:
             rectangle = rectangle[[0, 3, 2, 1]]
+
+            # U też musi odpowiadać faktycznej kolejności
+            u = rectangle[1] - rectangle[0]
+            u = u / torch.linalg.norm(u).clamp_min(1e-8)
+
+            v = rectangle[3] - rectangle[0]
+            v = v / torch.linalg.norm(v).clamp_min(1e-8)
 
         width = u_max - u_min
         height = v_max - v_min

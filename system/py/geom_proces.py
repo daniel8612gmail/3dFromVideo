@@ -1,20 +1,53 @@
+import time
+_start_time = time.perf_counter()
+_frame_time = _start_time
+_last_logtime = _start_time
+
 import argparse
 import numpy as np
 from pathlib import Path
 import cv2
 import torch 
 from geom_snap_matrix import create_debug_image
-from geom_find_best_normal_regions import filter_top_directions, find_dominant_normal_directions
+from geom_find_best_normal_regions import find_dominant_normal_directions, filter_direction_components, filter_top_directions
 from geom_planes import create_plane_tensor, save_plane_debug
 from geom_generate_poligon_base_on_planes import polygonize_planes
 from geom_plane_group import find_plane_groups, save_plane_groups_debug, save_plane_statistics, sort_and_filter
 from geom_boundary import find_plane_boundary_directions, save_plane_boundaries_debug
 from geom_poligon_from_boundaries import build_polygons_from_plane_boundaries, save_polygons_debug
 from geom_find_plane_rectangle import find_plane_rectangles
-from geom_rectangle_texture import create_rectangle_textures, save_rectangle_textures
+from geom_rectangle_texture import create_rectangle_textures, save_rectangle_textures, analyze_texture_coverage
 from geom_save_glb import save_rectangles_to_glb
 from save_glb import save_dominant_normal_pixels_to_glb
 
+def logtime(functionName, counterType="last_invoke"):
+    global _last_logtime, _frame_time
+
+    now = time.perf_counter()
+
+    if counterType == "last_invoke":
+        elapsed = now - _last_logtime
+        _last_logtime = now
+
+    elif counterType == "frame":
+        elapsed = now - _frame_time
+        _frame_time = now
+        _last_logtime = now
+
+    elif counterType == "from_start":
+        elapsed = now - _start_time
+
+    else:
+        raise ValueError(
+            f"Nieznany counterType: {counterType}"
+        )
+
+    total_ms = int(elapsed * 1000)
+    minutes = total_ms // 60000
+    seconds = (total_ms % 60000) // 1000
+    milliseconds = total_ms % 1000
+    color = counterType == "last_invoke" and 93 or counterType == "frame" and 92 or 0
+    print(f"Czas trwania '{functionName}': \033[{color}m{minutes:02d}:{seconds:02d}:{milliseconds:03d}\033[0m")
 
 def load_output(path, device="cuda"):
     data = torch.load(path, map_location=device)
@@ -26,89 +59,7 @@ def load_output(path, device="cuda"):
         "normals": data["normals"].float().to(device),
     }
 
-
-def save_dominant_directions_debug(
-    labels,
-    similarity,
-    directions,
-    output_path
-):
-    # GPU -> CPU
-    if torch.is_tensor(labels):
-        labels = labels.detach().cpu().numpy()
-
-    if torch.is_tensor(similarity):
-        similarity = similarity.detach().cpu().numpy()
-
-    if torch.is_tensor(directions):
-        directions = directions.detach().cpu().numpy()
-
-    labels = np.asarray(labels)
-    similarity = np.asarray(similarity)
-
-    h, w = labels.shape
-
-    # ---------------------------------------------------------
-    # 1. REGIONY / DOMINUJĄCE KIERUNKI
-    # ---------------------------------------------------------
-
-    debug = np.zeros((h, w, 3), dtype=np.uint8)
-
-    num_directions = len(directions)
-
-    # Stała paleta kolorów
-    colors = cv2.applyColorMap(
-        np.linspace(0, 255, num_directions, dtype=np.uint8).reshape(-1, 1),
-        cv2.COLORMAP_TURBO
-    ).reshape(-1, 3)
-
-    for i in range(num_directions):
-        debug[labels == i] = colors[i]
-
-    # -1 = brak przypisania
-    debug[labels < 0] = (0, 0, 0)
-
-    cv2.imwrite(
-        str(output_path) + "_regions.png",
-        debug
-    )
-
-    # ---------------------------------------------------------
-    # 2. SIMILARITY
-    # ---------------------------------------------------------
-
-    sim = np.clip(similarity, 0.0, 1.0)
-
-    sim_img = (sim * 255).astype(np.uint8)
-
-    sim_img[labels < 0] = 0
-
-    sim_img = cv2.applyColorMap(
-        sim_img,
-        cv2.COLORMAP_TURBO
-    )
-
-    cv2.imwrite(
-        str(output_path) + "_similarity.png",
-        sim_img
-    )
-
-    # ---------------------------------------------------------
-    # 3. INFORMACJA TEKSTOWA
-    # ---------------------------------------------------------
-
-    print("Dominant directions:")
-
-    for i, direction in enumerate(directions):
-        print(
-            f"{i:2d}: "
-            f"[{direction[0]: .4f}, "
-            f"{direction[1]: .4f}, "
-            f"{direction[2]: .4f}]"
-        )
-
-
-def process(image_dir, data):
+def process(image_dir, data, logEnabled=False):
     """
     Tutaj wykonujemy właściwe operacje na:
         data["points"]
@@ -125,34 +76,44 @@ def process(image_dir, data):
     OUTPUT_DIR = image_dir.parent.parent / "geometry"
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     
-    # DEBUG image
     image_path = image_dir.parent / f"{image_dir.name}.png"
     image = cv2.imread(str(image_path))
-
+    
+    if logEnabled:
+        logtime("Ładowanie klatki")
+    # DEBUG image
+        
     # ============================================================
     # 1. ZNAJDŹ DOMINUJĄCE KIERUNKI NORMAL
     # sprowadza normalne do kilku dominujących kierunków
     # ============================================================
     # directions: [N, 3] pixel_dirId: [H, W] similarity: [H, W] density: [N]
-    print("Finding dominant normal directions...")
+    if logEnabled:
+        print("Finding dominant normal directions...")
     ( directions, pixel_dirId, dir_similarity, dir_density ) = find_dominant_normal_directions(
         normals, mask,
         num_directions=15,
         angle_radius_deg=7.0,
         min_similarity=0.90
     )
+    if logEnabled:
+        logtime("find_dominant_normal_directions")
+    # print(f"Liczba rozpoznanych kierunków: {len(directions)}")
     
-    # directions, pixel_dirId, dir_similarity, dir_density = filter_top_directions(
-    #     directions,
-    #     pixel_dirId,
-    #     dir_similarity,
-    #     dir_density,
-    #     top_n=2
-    # )
+    # directions, pixel_dirId, dir_similarity, dir_density = filter_top_directions( directions, pixel_dirId, dir_similarity, dir_density,
+    #     top_n=2 )
     
-    logfile = OUTPUT_DIR / f"{image_dir.name}_1_regions_by_normals.png"
-    create_debug_image(pixel_dirId, logfile)
+    # logfile = OUTPUT_DIR / f"{image_dir.name}_1_regions_by_normals.png"
+    # create_debug_image(pixel_dirId, logfile)
       
+    #============================================================
+    # 1.5 Filtrowanie
+    #============================================================
+    pixel_dirId = filter_direction_components( pixel_dirId, min_component_size=100 )
+    if logEnabled:
+        logtime("filter_direction_components")
+
+    
     #============================================================
     # 2. Zmień NORMALNE NA PODSTAWIE DOMINUJ
     # Zapisuje dominujące normalne w tensorze normalnych
@@ -162,32 +123,31 @@ def process(image_dir, data):
     normals_consolidated = torch.zeros_like(normals)
     valid = pixel_dirId >= 0
     normals_consolidated[valid] = directions[pixel_dirId[valid]]
+    if logEnabled:
+        logtime("normals_consolidated")
 
     # Debug
-    save_dominant_normal_pixels_to_glb(
-        points,
-        normals_consolidated,
-        OUTPUT_DIR / f"{image_dir.name}_dominant_normal_pixels.glb",
-        size=0.05,
-    )
+    # save_dominant_normal_pixels_to_glb( points, normals_consolidated, OUTPUT_DIR / f"{image_dir.name}_dominant_normal_pixels.glb", size=0.05, )
     
     #============================================================
     # 3. Planes tensors
     # wykrywa płaszczyzny na podstawie dominujących normalnych i punktów 3D
     # Zwraca [W,H,4] tensor płaszczyzn w formie [nx, ny, nz, d] dla równania płaszczyzn Ax + By + Cz + D = 0
     #============================================================
-    print("Creating planes tensor and saving debug images...")
+    if logEnabled:
+        print("Creating planes tensor and saving debug images...")
     pixel_planes = create_plane_tensor(points, normals_consolidated)
+    logtime("create_plane_tensor")
     
     
     # import trimesh
     # scene = trimesh.load(OUTPUT_DIR / f"{image_dir.name}_pixel_planes.glb")
     # scene.show()
     
-    print(f"Planes tensor shape: {pixel_planes.shape}")
-    print(f"Planes count: {pixel_planes.shape[0] * pixel_planes.shape[1]}")
-    logfile = OUTPUT_DIR / f"{image_dir.name}_3"
-    save_plane_debug( pixel_planes, mask, logfile )
+    if logEnabled:
+        logfile = OUTPUT_DIR / f"{image_dir.name}_3"
+        save_plane_debug( pixel_planes, mask, logfile )
+        logtime("save_plane_debug( pixel_planes, mask, logfile )")
     
     #===========================================================
     # 4. Plane grouping
@@ -203,113 +163,80 @@ def process(image_dir, data):
         distance_threshold=0.002,
         min_points=300
     )
-
+    if logEnabled:
+        logtime("find_plane_groups")    
+        print(f"Liczba rozpoznanych płaszczyzn: {len(plane_labels)}")
     #===========================================================
     # Sort and filter planes
     # wybranie największych płaszczyzn
     #===========================================================
-    plane_labels, planes_consolidated, plane_counts = sort_and_filter(
-        plane_labels, 
-        planes_consolidated, 
-        plane_counts, 
-        limit = 100
-    )
+    # plane_labels, planes_consolidated, plane_counts = sort_and_filter(
+    #     plane_labels, 
+    #     planes_consolidated, 
+    #     plane_counts, 
+    #     limit = 100
+    # )
 
     print("Saving plane groups debug images...")
-    logfile = OUTPUT_DIR / f"{image_dir.name}_4_plane_groups.txt"
-    save_plane_statistics( plane_labels, plane_counts, planes_consolidated, logfile, top_n=2000 )
+    if logEnabled:
+        logfile = OUTPUT_DIR / f"{image_dir.name}_4_plane_groups.txt"
+        save_plane_statistics( plane_labels, plane_counts, planes_consolidated, logfile, top_n=2000 )
     
-    logfile = OUTPUT_DIR / f"{image_dir.name}_4_plane_groups"
-    save_plane_groups_debug( plane_labels, plane_counts, planes_consolidated, image,  logfile, top_n=2000 )
-    
+        logfile = OUTPUT_DIR / f"{image_dir.name}_4_plane_groups"
+        save_plane_groups_debug( plane_labels, plane_counts, planes_consolidated, image,  logfile, top_n=2000 )
+        logtime("save_plane_statistics")    
+  
     #===========================================================
     # Plane rectangles
     # zwraca prostokątne regiony w obrębie płaszczyzn na podstawie ekstremów x,y,z
     #===========================================================
-    print("Finding plane rectangles...")
+    if logEnabled:
+        print("Finding plane rectangles...")
     rectangles = find_plane_rectangles(
         points,
         plane_labels,
         planes_consolidated
     )
-    print(f"Rectangles found: {len(rectangles)}")
-    
-    logdir = OUTPUT_DIR / f"{image_dir.name}_textures"
-    textures = create_rectangle_textures(
+    if logEnabled:
+        print(f"Rectangles found: {len(rectangles)}")
+        logtime("find_plane_rectangles")    
+      
+    textures, rectangles = create_rectangle_textures(
         image,
         points,
         plane_labels,
         rectangles,
-        texture_size=256
+        texture_size=512,
+        min_coverage=1.0
     )
-    save_rectangle_textures(textures, logdir)
+    logtime(f"Textured rectangles: {len(rectangles)}")        
+    if logEnabled:
+        logdir = OUTPUT_DIR / f"{image_dir.name}_textures"
+        save_rectangle_textures(textures, logdir)
+        logtime("save_rectangle_textures")
     
-    print(f"Textures created: {len(textures)}")
+    # ===== Sorting planes =====
+    coverage = analyze_texture_coverage(textures)
+    from collections import Counter
+
+    groups = Counter(
+        round(x["image_percent"])
+        for x in coverage["textures"]
+    )
+
+    if logEnabled:
+        for percent, count in sorted(groups.items(), reverse=True):
+            print(f"{percent:3d}%: {count} plane")
+    
+    if logEnabled:
+        logtime("Sorting planes")
     
     save_rectangles_to_glb(
         rectangles,
         textures,
         OUTPUT_DIR / f"{image_dir.name}_planes.glb",
     )
-    
-    exit()
-    return
-    #===========================================================
-    # Boundary detection
-    # wykrywa granice między płaszczyznami i zapisuje ich kierunki
-    #===========================================================
-    print("Finding plane boundary directions...")
-    boundaries = find_plane_boundary_directions(
-        plane_labels,
-        min_boundary_pixels=20,
-        num_directions=18
-    )
-    print(f"Boundaries found: {len(boundaries)}")
-    save_plane_boundaries_debug(
-        image,
-        boundaries,
-        OUTPUT_DIR / f"{image_dir.name}_5_boundaries.png",
-        top_n=100,
-        line_thickness=1,
-    )
-    
-    polygons = build_polygons_from_plane_boundaries(
-        plane_labels,
-        boundaries,
-        max_edges_per_plane=8,
-        max_vertices=10,
-        min_edge_length=30.0,
-        intersection_tolerance=5.0
-    )
-    save_polygons_debug(
-        image,
-        polygons[:50],
-        OUTPUT_DIR / f"{image_dir.name}_6_polygons.png",
-    )
-    
-    return
-    #===========================================================
-    # Polygonization
-    #===========================================================
-    print("Polygonization...")
-           
-    
-    poligon_debugpath = OUTPUT_DIR / f"{image_dir.name}_debug"
-    poligon_debugpath.mkdir(parents=True, exist_ok=True)
-    polygons = polygonize_planes(
-        plane_labels,
-        planes,
-        min_region_size=500,
-        smooth_radius=7,
-        line_tolerance=3.0,
-        min_segment_length=20,
-        max_segment_length=250,
-        segment_step=5,
-        max_vertices=10,
-        min_inlier_ratio=0.75,
-        debug_dir=poligon_debugpath,
-        debug_image=image,
-    )
+    logtime("save_rectangles_to_glb")
 
 def main():
     parser = argparse.ArgumentParser()
@@ -323,7 +250,7 @@ def main():
     )
 
     args = parser.parse_args()
-
+    logtime("Wczytywanie bibliotek")
     input_dir = args.input
 
     if not input_dir.is_dir():
@@ -345,7 +272,8 @@ def main():
     )
 
     print(f"Images found: {len(images)}")
-
+    logtime("Przygotowywanie zdjęć")
+    
     for image_path in images:
 
         # Podkatalog o nazwie takiej samej jak zdjęcie
@@ -369,6 +297,7 @@ def main():
         # Opcjonalnie zwolnij pamięć GPU
         del data
         torch.cuda.empty_cache()
+        logtime(f"Frame \033[92m{image_path.name}\033[0m done", "frame")
 
 
 if __name__ == "__main__":

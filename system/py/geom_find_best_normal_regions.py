@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
-
+import numpy as np
+from scipy import ndimage
 
 @torch.no_grad()
 def find_dominant_normal_directions(
@@ -350,7 +351,38 @@ def find_dominant_normal_directions(
         best_similarity,
         density_result
     )
-    
+
+def filter_direction_components(pixel_dirId, min_component_size=100):
+    device = pixel_dirId.device
+    result = pixel_dirId.clone()
+
+    direction_ids = torch.unique(pixel_dirId)
+    direction_ids = direction_ids[direction_ids >= 0]
+
+    structure = np.ones((3, 3), dtype=np.uint8)
+
+    for direction_id in direction_ids.tolist():
+        mask = (pixel_dirId == direction_id).cpu().numpy()
+
+        labels, num_components = ndimage.label(mask, structure=structure)
+
+        if num_components == 0:
+            continue
+
+        counts = np.bincount(labels.ravel())
+
+        remove = np.zeros(len(counts), dtype=bool)
+        remove[counts < min_component_size] = True
+        remove[0] = False
+
+        remove_mask = remove[labels]
+
+        result[
+            torch.from_numpy(remove_mask).to(device)
+        ] = -1
+
+    return result
+
     
 def apply_dominant_normals(
     normals,

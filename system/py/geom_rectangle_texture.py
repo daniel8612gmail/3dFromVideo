@@ -9,8 +9,13 @@ def create_rectangle_textures(
     plane_labels,
     rectangles,
     texture_size=512,
+    min_coverage=5.0,
 ):
     textures = []
+    filtered_rectangles = []
+
+    texture_pixels = texture_size * texture_size
+    min_pixels = int(texture_pixels * min_coverage / 100.0)
 
     for rectangle in rectangles:
         plane_id = rectangle["plane_id"]
@@ -19,24 +24,13 @@ def create_rectangle_textures(
             dtype=points.dtype
         )
 
-        # Punkty należące do płaszczyzny
         valid = plane_labels == plane_id
 
         if valid.sum() < 3:
-            textures.append(None)
             continue
 
         ys, xs = torch.where(valid)
         plane_points = points[valid]
-
-        # --------------------------------------------------------
-        # Lokalne osie prostokąta
-        #
-        # 0 -------- 1
-        # |          |
-        # |          |
-        # 3 -------- 2
-        # --------------------------------------------------------
 
         u = corners[1] - corners[0]
         v = corners[3] - corners[0]
@@ -45,32 +39,18 @@ def create_rectangle_textures(
         height = torch.linalg.norm(v)
 
         if width <= 0 or height <= 0:
-            textures.append(None)
             continue
 
         u = u / width
         v = v / height
-
-        # --------------------------------------------------------
-        # Rzutowanie punktów 3D na lokalne U,V
-        # --------------------------------------------------------
 
         relative = plane_points - corners[0]
 
         U = torch.sum(relative * u, dim=1)
         V = torch.sum(relative * v, dim=1)
 
-        # --------------------------------------------------------
-        # U,V -> współrzędne tekstury
-        # --------------------------------------------------------
-
-        U = (
-            U / width * (texture_size - 1)
-        ).round().long()
-
-        V = (
-            V / height * (texture_size - 1)
-        ).round().long()
+        U = (U / width * (texture_size - 1)).round().long()
+        V = (V / height * (texture_size - 1)).round().long()
 
         inside = (
             (U >= 0) &
@@ -84,48 +64,36 @@ def create_rectangle_textures(
         ys = ys[inside]
         xs = xs[inside]
 
-        # --------------------------------------------------------
-        # RGBA
-        # --------------------------------------------------------
+        if len(U) == 0:
+            continue
+
+        # Liczba rzeczywiście zajętych pikseli tekstury
+        pixel_ids = V * texture_size + U
+        occupied_pixels = torch.unique(pixel_ids).numel()
+
+        # Odrzuć prostokąt jeśli pokrycie < min_coverage
+        if occupied_pixels < min_pixels:
+            continue
 
         texture = np.zeros(
             (texture_size, texture_size, 4),
             dtype=np.uint8
         )
 
-        if len(U) > 0:
-            ys_np = ys.cpu().numpy()
-            xs_np = xs.cpu().numpy()
-            U_np = U.cpu().numpy()
-            V_np = V.cpu().numpy()
+        ys_np = ys.cpu().numpy()
+        xs_np = xs.cpu().numpy()
+        U_np = U.cpu().numpy()
+        V_np = V.cpu().numpy()
 
-            # cv2.imread() daje BGR
-            pixels = image[
-                ys_np,
-                xs_np
-            ]
+        pixels = image[ys_np, xs_np]
 
-            pixels = cv2.cvtColor(
-                pixels.reshape(-1, 1, 3),
-                cv2.COLOR_BGR2RGB
-            ).reshape(-1, 3)
+        pixels = cv2.cvtColor(
+            pixels.reshape(-1, 1, 3),
+            cv2.COLOR_BGR2RGB
+        ).reshape(-1, 3)
 
-            texture[
-                V_np,
-                U_np,
-                :3
-            ] = pixels
-
-            # Alpha = 255 tam, gdzie mamy rzeczywisty piksel
-            texture[
-                V_np,
-                U_np,
-                3
-            ] = 255
-
-        # --------------------------------------------------------
-        # Wynik
-        # --------------------------------------------------------
+        texture[V_np, U_np, :3] = pixels
+        texture[V_np, U_np, 3] = 255
 
         textures.append({
             "texture": texture,
@@ -139,10 +107,57 @@ def create_rectangle_textures(
             "point_count": rectangle["point_count"],
         })
 
-    return textures
+        filtered_rectangles.append(rectangle)
+
+    return textures, filtered_rectangles
 
 
 
+def analyze_texture_coverage(textures):
+    results = []
+
+    total_pixels = 0
+    total_image_pixels = 0
+
+    for i, item in enumerate(textures):
+        if item is None:
+            continue
+
+        texture = item["texture"]
+
+        alpha = texture[..., 3]
+
+        image_pixels = int((alpha > 0).sum())
+        empty_pixels = int((alpha == 0).sum())
+        pixels = alpha.size
+
+        image_percent = 100.0 * image_pixels / pixels
+        empty_percent = 100.0 * empty_pixels / pixels
+
+        results.append({
+            "plane": i,
+            "total": pixels,
+            "image": image_pixels,
+            "empty": empty_pixels,
+            "image_percent": image_percent,
+            "empty_percent": empty_percent
+        })
+
+        total_pixels += pixels
+        total_image_pixels += image_pixels
+
+    total_empty_pixels = total_pixels - total_image_pixels
+
+    return {
+        "textures": results,
+        "total_pixels": total_pixels,
+        "image_pixels": total_image_pixels,
+        "empty_pixels": total_empty_pixels,
+        "image_percent": 100.0 * total_image_pixels / total_pixels if total_pixels else 0,
+        "empty_percent": 100.0 * total_empty_pixels / total_pixels if total_pixels else 0
+    }
+    
+    
 def save_rectangle_textures(textures, logdir):
     for i, item in enumerate(textures):
         if item is None:

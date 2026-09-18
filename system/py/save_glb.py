@@ -5,7 +5,7 @@ import torch
 
 def save_dominant_normal_pixels_to_glb(
     points,
-    normals_consolidated,
+    normals,
     output_path,
     size=0.05,
 ):
@@ -13,7 +13,7 @@ def save_dominant_normal_pixels_to_glb(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     valid = (
-        torch.linalg.norm(normals_consolidated, dim=-1) > 1e-8
+        torch.linalg.norm(normals, dim=-1) > 1e-8
     ) & torch.isfinite(points).all(dim=-1)
 
     ys, xs = torch.where(valid)
@@ -22,7 +22,7 @@ def save_dominant_normal_pixels_to_glb(
         raise RuntimeError("No valid pixels with non-zero normals.")
 
     centers = points[ys, xs]
-    normals = normals_consolidated[ys, xs]
+    normals = normals[ys, xs]
 
     normals = normals / torch.linalg.norm(normals, dim=1, keepdim=True)
 

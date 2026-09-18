@@ -45,6 +45,13 @@ def save_rectangles_to_glb(
         if rectangle.shape != (4, 3):
             continue
 
+        # Zmiana układu współrzędnych:
+        # X ->  X
+        # Y -> -Y
+        # Z -> -Z
+        rectangle = rectangle.copy()
+        rectangle[:, 1:] *= -1.0
+
         texture = texture_data["texture"]
 
         if torch.is_tensor(texture):
@@ -57,7 +64,6 @@ def save_rectangles_to_glb(
                 "Texture must have shape [H, W, 4] (RGBA)."
             )
 
-        # OpenCV/BGR(A) -> RGB(A), jeśli tekstura pochodzi z cv2
         image = Image.fromarray(texture, "RGBA")
 
         vertices = rectangle
