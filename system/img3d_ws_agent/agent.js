@@ -1,312 +1,473 @@
-require('dotenv').config();
+require("dotenv").config();
+const runPython = require("./runPython");
 
-const WebSocket = require('ws');
+const WebSocket = require("ws");
+const fs = require("fs");
+const path = require("path");
+const { spawn } = require("child_process");
+
+// ============================================================
+// KONFIGURACJA
+// ============================================================
 
 const DOMAIN = process.env.DOMAIN;
 const AGENT_ID = process.env.AGENT_ID;
 const AGENT_TOKEN = process.env.AGENT_TOKEN;
+const AGENT_DATA_DIR = path.join(process.env.WORKING_DIR || __dirname, "data");
+
+const RECONNECT_DELAY = 5000;
 
 if (!DOMAIN || !AGENT_ID || !AGENT_TOKEN) {
-    console.error('Brakuje konfiguracji w pliku .env');
-    process.exit(1);
+  console.error("Brakuje konfiguracji w pliku .env");
+  console.error("");
+  console.error("Wymagane zmienne:");
+  console.error("  DOMAIN");
+  console.error("  AGENT_ID");
+  console.error("  AGENT_TOKEN");
+  process.exit(1);
 }
 
-const URL = `wss://${DOMAIN}/ws`;
+const WS_URL = `wss://${DOMAIN}/ws`;
+
+// ============================================================
+// STAN AGENTA
+// ============================================================
 
 let ws = null;
 let reconnectTimer = null;
-let currentJob = null;
-let waitingForGlb = false;
 
-console.log('');
-console.log('Image 3D Agent');
-console.log('==============');
-console.log(`Domain:  ${DOMAIN}`);
-console.log(`Agent:   ${AGENT_ID}`);
-console.log(`URL:     ${URL}`);
-console.log('');
+let currentJob = null;
+
+// ============================================================
+// POŁĄCZENIE Z SERWEREM
+// ============================================================
 
 function connect() {
-    console.log(`Connecting to ${URL}...`);
+  console.log("");
+  console.log(`Łączenie z: ${WS_URL}`);
+  console.log(`Agent: ${AGENT_ID}`);
+  console.log("");
 
+  ws = new WebSocket(WS_URL);
 
-    ws = new WebSocket(URL);
+  ws.on("open", () => {
+    console.log("Połączono z serwerem");
 
-    ws.on('open', () => {
-        console.log('✓ WebSocket connection established');
-
-        sendAuth();
+    send({
+      type: "auth",
+      agentId: AGENT_ID,
+      token: AGENT_TOKEN,
     });
+  });
 
-    ws.on('message', async (data, isBinary) => {
-        try {
-            if (isBinary) {
-                await handleBinaryMessage(data);
-                return;
-            }
-
-            handleJsonMessage(data.toString());
-        } catch (error) {
-            console.error('Message handling error:', error.message);
-        }
-    });
-
-    ws.on('error', (error) => {
-        console.error(`✗ WebSocket error: ${error.message} `);
-    });
-
-    ws.on('close', (code, reason) => {
-        console.log(`Connection closed: ${code}${reason ? ` (${reason})` : ''} `);
-
-        ws = null;
-        currentJob = null;
-        waitingForGlb = false;
-
-        scheduleReconnect();
-    });
-
-}
-
-function sendAuth() {
-    sendJson({
-        type: 'auth',
-        agentId: AGENT_ID,
-        token: AGENT_TOKEN
-    });
-}
-
-function sendJson(message) {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-        throw new Error('WebSocket is not connected');
-    }
-
-
-    ws.send(JSON.stringify(message));
-
-}
-
-function handleJsonMessage(message) {
-    let data;
-
+  ws.on("message", async (data, isBinary) => {
     try {
-        data = JSON.parse(message);
-    } catch {
-        console.error('Received invalid JSON:', message);
+      // ------------------------------------------------
+      // WIADOMOŚĆ JSON
+      // ------------------------------------------------
+
+      if (!isBinary) {
+        const message = JSON.parse(data.toString());
+
+        await handleMessage(message);
+
         return;
-    }
+      }
 
-    switch (data.type) {
-        case 'auth_ok':
-            handleAuthOk(data);
-            break;
+      // ------------------------------------------------
+      // DANE BINARNE — POWINNO BYĆ TO ZDJĘCIE
+      // ------------------------------------------------
 
-        case 'job':
-            handleJob(data);
-            break;
+      if (!currentJob) {
+        console.error("Otrzymano dane binarne, ale nie ma aktywnego zadania.");
 
-        case 'ready_for_glb':
-            handleReadyForGlb(data);
-            break;
-
-        default:
-            console.log('Received:', data);
-    }
-
-}
-
-function handleAuthOk(data) {
-    console.log(`✓ Authentication successful: ${data.agentId}`);
-    console.log('Waiting for jobs...');
-}
-
-function handleJob(job) {
-    if (currentJob) {
-        console.error('Received a new job while another job is active.');
         return;
-    }
+      }
 
-    currentJob = {
-        jobId: job.jobId,
-        sessionId: job.sessionId,
-        filename: job.filename,
-        size: job.size,
-        photo: null
-    };
+      const imageBuffer = Buffer.from(data);
 
-    waitingForGlb = false;
+      console.log("");
+      console.log(`Otrzymano zdjęcie: ${imageBuffer.length} bajtów`);
 
-    console.log('');
-    console.log('New job received');
-    console.log('----------------');
-    console.log(`Job ID:     ${job.jobId} `);
-    console.log(`Session ID: ${job.sessionId} `);
-    console.log(`Filename:   ${job.filename} `);
-    console.log(`Size:       ${job.size} bytes`);
-    console.log('');
+      const job = currentJob;
 
+      // Zabezpieczenie przed przyjęciem drugiego zadania
+      // podczas przetwarzania pierwszego.
+      currentJob = {
+        ...job,
+        imageBuffer,
+      };
 
-}
+      try {
+        await processJob(job.jobId, imageBuffer, job.sessionId, job.filename);
+      } catch (error) {
+        console.error("");
+        console.error(`Błąd podczas wykonywania job ${job.jobId}:`);
 
-async function handleBinaryMessage(data) {
-    if (!currentJob) {
-        console.error('Received binary data without an active job.');
-        return;
-    }
+        console.error(error);
 
-
-    if (waitingForGlb) {
-        console.error('Received unexpected binary data while waiting for GLB.');
-        return;
-    }
-
-    currentJob.photo = Buffer.from(data);
-
-    console.log(`Photo received: ${currentJob.photo.length} bytes`);
-
-    await processJob();
-
-
-}
-
-async function setProgress(jobId, progress, stage = null) {
-    const message = {
-        type: 'progress',
-        jobId,
-        progress
-    };
-
-    if (stage) {
-        message.stage = stage;
-    }
-
-    ws.send(JSON.stringify(message));
-}
-
-async function processJob() {
-    console.log('Starting image processing...');
-
-
-    try {
-        for (let progress = 0; progress <= 100; progress += 10) {
-            if (!currentJob || !ws || ws.readyState !== WebSocket.OPEN) {
-                throw new Error('Connection lost during processing');
-            }
-
-            sendJson({
-                type: 'progress',
-                jobId: currentJob.jobId,
-                progress
-            });
-
-            console.log(`Progress: ${progress}% `);
-
-            if (progress < 100) {
-                await sleep(500);
-            }
-        }
-
-        /*
-         * Tell the server that the next binary message
-         * will contain the GLB.
-         */
-        sendJson({
-            type: 'ready_for_glb',
-            jobId: currentJob.jobId
+        send({
+          type: "error",
+          jobId: job.jobId,
+          error: error.message || String(error),
         });
-
-        waitingForGlb = true;
-
-        const glb = createTestGlb();
-
-        console.log(`Sending test GLB: ${glb.length} bytes`);
-
-        ws.send(glb);
-
-        console.log('✓ GLB sent');
-
+      } finally {
         currentJob = null;
-        waitingForGlb = false;
-
-        console.log('');
-        console.log('Waiting for next job...');
+      }
     } catch (error) {
-        console.error(`Processing failed: ${error.message} `);
-
-        if (currentJob && ws && ws.readyState === WebSocket.OPEN) {
-            sendJson({
-                type: 'error',
-                jobId: currentJob.jobId,
-                error: error.message
-            });
-        }
-
-        currentJob = null;
-        waitingForGlb = false;
+      console.error("Błąd obsługi wiadomości:", error);
     }
+  });
 
+  ws.on("close", (code, reason) => {
+    console.log("");
+    console.log(
+      `Połączenie zamknięte: ${code}` + (reason ? ` (${reason})` : ""),
+    );
 
+    ws = null;
+
+    scheduleReconnect();
+  });
+
+  ws.on("error", (error) => {
+    console.error("Błąd WebSocket:", error.message);
+  });
 }
 
-function createTestGlb() {
-    /*
-    * Minimal GLB-like buffer for protocol testing.
-    *
-    * The server currently validates only the first
-    * four bytes ("glTF") before saving the file.
-    *
-    * This is NOT a valid 3D model yet.
-    */
-    const buffer = Buffer.alloc(32);
+// ============================================================
+// OBSŁUGA WIADOMOŚCI OD SERWERA
+// ============================================================
 
+async function handleMessage(message) {
+  switch (message.type) {
+    // ----------------------------------------------------
+    // AUTORYZACJA
+    // ----------------------------------------------------
 
-    buffer.write('glTF', 0, 4, 'ascii');
+    case "auth_ok":
+      console.log(`Autoryzacja OK: ${message.agentId}`);
 
-    // GLB version 2
-    buffer.writeUInt32LE(2, 4);
+      break;
 
-    // Total length
-    buffer.writeUInt32LE(buffer.length, 8);
+    // ----------------------------------------------------
+    // NOWE ZADANIE
+    // ----------------------------------------------------
 
-    return buffer;
+    case "job":
+      if (currentJob) {
+        console.error("");
+        console.error(
+          "BŁĄD: serwer wysłał nowe zadanie, " + "mimo że agent jest zajęty.",
+        );
 
+        console.error(`Aktualne zadanie: ${currentJob.jobId}`);
+
+        console.error(`Nowe zadanie: ${message.jobId}`);
+
+        return;
+      }
+
+      currentJob = {
+        jobId: message.jobId,
+        sessionId: message.sessionId,
+        filename: message.filename,
+        size: message.size,
+        imageBuffer: null,
+      };
+
+      console.log("");
+      console.log("========================================");
+      console.log("NOWE ZADANIE");
+      console.log("========================================");
+      console.log(`Job:      ${message.jobId}`);
+      console.log(`Session:  ${message.sessionId}`);
+      console.log(`Filename: ${message.filename}`);
+      console.log(`Size:     ${message.size}`);
+      console.log("Oczekiwanie na zdjęcie...");
+      console.log("========================================");
+
+      break;
+
+    // ----------------------------------------------------
+    // INNE WIADOMOŚCI
+    // ----------------------------------------------------
+
+    default:
+      console.log("Serwer:", message);
+
+      break;
+  }
 }
+
+// ============================================================
+// WYSYŁANIE JSON DO SERWERA
+// ============================================================
+
+function send(message) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    throw new Error("WebSocket nie jest połączony.");
+  }
+
+  ws.send(JSON.stringify(message));
+}
+
+// ============================================================
+// RAPORTOWANIE PROGRESSU
+// ============================================================
+
+async function setProgress(jobId, progress, stage = null, text = "") {
+  const message = {
+    type: "progress",
+    jobId,
+    progress,
+  };
+
+  if (stage !== null) {
+    message.stage = stage;
+  }
+  if (text !== "") {
+    message.text = text;
+  }
+
+  send(message);
+
+  console.log(`[${jobId}] ${progress}%` + (stage ? ` — ${stage}` : ""));
+}
+
+function sendLog(jobId, message) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  ws.send(
+    JSON.stringify({
+      type: "progress",
+      jobId,
+      message,
+    }),
+  );
+}
+
+// ============================================================
+// GŁÓWNY PIPELINE
+// ============================================================
+
+async function processJob(jobId, imageBuffer, sessionId, filename) {
+  console.log("");
+  console.log(`Rozpoczynam przetwarzanie: ${jobId}`);
+
+  const context = {
+    jobId,
+    sessionId,
+    filename,
+    log: (message) => sendLog(jobId, message),
+  };
+
+  await setProgress(jobId, 0, "starting");
+
+  let data = imageBuffer;
+
+  for (const step of pipeline) {
+    console.log("");
+    console.log(`[${jobId}] Etap: ${step.stage}`);
+
+    data = await step.run(data, context);
+
+    await setProgress(jobId, step.progress, step.stage);
+  }
+
+  if (!Buffer.isBuffer(data)) {
+    throw new Error("Pipeline nie zwrócił Buffer z plikiem GLB.");
+  }
+
+  send({
+    type: "ready_for_glb",
+    jobId,
+  });
+
+  ws.send(data);
+
+  console.log("");
+  console.log(`[${jobId}] Wysłano GLB: ${data.length} bajtów`);
+}
+
+// ============================================================
+// PIPELINE — TUTAJ DODAJEMY WŁASNE FUNKCJE
+// ============================================================
+//
+// progress = wartość po zakończeniu danego etapu
+//
+// run = funkcja wykonująca etap
+//
+// Dane przepływają:
+//
+// imageBuffer
+//     ↓
+// prepareImage()
+//     ↓
+// wynik
+//     ↓
+// segment()
+//     ↓
+// wynik
+//     ↓
+// generate3D()
+//     ↓
+// wynik
+//     ↓
+// exportGLB()
+//     ↓
+// Buffer GLB
+//
+// ============================================================
+
+const pipeline = [
+  {
+    progress: 20,
+    stage: "prepare_image",
+    run: prepareImage,
+  },
+
+  {
+    progress: 40,
+    stage: "moge3",
+    run: runMoGe3,
+  },
+
+  {
+    progress: 60,
+    stage: "generate3D",
+    run: generate3D,
+  },
+
+  {
+    progress: 95,
+    stage: "export_glb",
+    run: exportGLB,
+  },
+];
+
+// ============================================================
+// FUNKCJE PIPELINU
+// ============================================================
+//
+// Tutaj będziemy pisać właściwy kod Image → 3D.
+//
+// Każda funkcja:
+//     przyjmuje wynik poprzedniej
+//     wykonuje swój etap
+//     zwraca wynik dla następnego etapu
+//
+// ============================================================
+
+async function prepareImage(imageBuffer, context) {
+  console.log(`prepareImage(): ${imageBuffer.length} bajtów`);
+
+  const { sessionId, filename } = context;
+
+  // sessionId z serwera musi być dokładnie 32 znakami hex
+  if (!/^[a-f0-9]{32}$/.test(sessionId)) {
+    throw new Error(`Nieprawidłowy sessionId: ${sessionId}`);
+  }
+
+  // Dopuszczamy tylko nasze rozszerzenia.
+  const extension = path.extname(filename).toLowerCase();
+
+  if (![".jpg", ".jpeg", ".png", ".webp"].includes(extension)) {
+    throw new Error(`Nieprawidłowe rozszerzenie obrazu: ${extension}`);
+  }
+
+  const sessionDir = path.join(AGENT_DATA_DIR, sessionId);
+
+  await fs.promises.mkdir(sessionDir, {
+    recursive: true,
+  });
+
+  const imagePath = path.join(sessionDir, `photo${extension}`);
+
+  await fs.promises.writeFile(imagePath, imageBuffer);
+
+  console.log(`Zdjęcie zapisane: ${imagePath}`);
+
+  return {
+    imageBuffer,
+    imagePath,
+  };
+}
+
+async function runMoGe3(data, context) {
+  const sessionDir = path.join(AGENT_DATA_DIR, context.sessionId);
+  console.log("Uruchamiam MoGe3:");
+  console.log(`Katalog: ${sessionDir}`);
+
+  await runPython(context, "../py/ai_moge3.py", ["-i", sessionDir]);
+}
+
+async function generate3D(data, context) {
+  const sessionDir = path.join(AGENT_DATA_DIR, context.sessionId);
+  console.log("Uruchamiam geom_process.py");
+  console.log(`Katalog: ${sessionDir}`);
+
+  await runPython(context, "../py/geom_process.py", ["-i", sessionDir]);
+}
+
+async function exportGLB(data, context) {
+  const sessionDir = path.join(AGENT_DATA_DIR, context.sessionId);
+
+  const imageName = path.parse(context.filename).name;
+  const glbPath = path.join(sessionDir, imageName, `${imageName}_planes.glb`);
+
+  context.log(`Export GLB: ${glbPath} `);
+
+  try {
+    const glb = await fs.promises.readFile(glbPath);
+
+    context.log(`GLB wczytany: ${glb.length} bajtów`);
+
+    return glb;
+  } catch (error) {
+    throw new Error(
+      `Nie można odczytać pliku GLB "${glbPath}": ${error.message} `,
+    );
+  }
+}
+
+// ============================================================
+// RECONNECT
+// ============================================================
 
 function scheduleReconnect() {
-    if (reconnectTimer) {
-        return;
-    }
+  if (reconnectTimer) {
+    return;
+  }
 
-    console.log('Reconnecting in 5 seconds...');
+  console.log(`Ponowne połączenie za ${RECONNECT_DELAY / 1000} s...`);
 
-    reconnectTimer = setTimeout(() => {
-        reconnectTimer = null;
-        connect();
-    }, 5000);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
 
-
+    connect();
+  }, RECONNECT_DELAY);
 }
 
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
+// ============================================================
+// ZAMKNIĘCIE CTRL+C
+// ============================================================
 
-process.on('SIGINT', () => {
-    console.log('');
-    console.log('Stopping agent...');
+process.on("SIGINT", () => {
+  console.log("");
+  console.log("Zamykanie agenta...");
 
+  if (ws) {
+    ws.close();
+  }
 
-    if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-    }
-
-    if (ws) {
-        ws.close();
-    }
-
-    process.exit(0);
-
-
+  process.exit(0);
 });
+
+// ============================================================
+// START
+// ============================================================
 
 connect();

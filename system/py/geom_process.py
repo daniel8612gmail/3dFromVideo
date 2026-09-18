@@ -59,7 +59,7 @@ def load_output(path, device="cuda"):
         "normals": data["normals"].float().to(device),
     }
 
-def process(image_dir, data, logEnabled=False):
+def process(image_path, data, logEnabled=False):
     """
     Tutaj wykonujemy właściwe operacje na:
         data["points"]
@@ -73,10 +73,8 @@ def process(image_dir, data, logEnabled=False):
     mask = data["mask"]
     normals = data["normals"] # [H, W, 3]
 
-    OUTPUT_DIR = image_dir.parent.parent / "geometry"
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    
-    image_path = image_dir.parent / f"{image_dir.name}.png"
+    image_dir = image_path.with_suffix("");
+    OUTPUT_DIR = image_dir
     image = cv2.imread(str(image_path))
     
     if logEnabled:
@@ -290,7 +288,7 @@ def main():
         data = load_output(moge3_path)
         print(f"Loaded data from {moge3_path}")
         process(
-            image_dir,
+            image_path,
             data
         )
 

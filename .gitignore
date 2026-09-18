@@ -9,3 +9,4 @@ system/py/__pycache__
 *.dmap
 system/img3d_ws/.env
 system/img3d_ws_agent/.env
+system/img3d_ws/build
