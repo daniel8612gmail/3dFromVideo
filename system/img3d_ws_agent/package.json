@@ -1,0 +1,16 @@
+{
+  "name": "img3d_ws_agent",
+  "version": "1.0.0",
+  "description": "",
+  "main": "agent.js",
+  "scripts": {
+    "start": "node agent.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Daniel Mieszkowski",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^18.0.0",
+    "ws": "^8.21.3"
+  }
+}

@@ -1,0 +1,26 @@
+[Unit]
+Description=Image 3D WebSocket Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+User=www-data
+Group=www-data
+
+WorkingDirectory=/var/www/img3d-ws
+
+ExecStart=/usr/bin/node /var/www/img3d-ws/server.js
+
+Restart=always
+RestartSec=5
+
+Environment=NODE_ENV=production
+
+# Logowanie do systemowego journal
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
