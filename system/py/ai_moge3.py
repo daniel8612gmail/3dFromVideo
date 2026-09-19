@@ -1,8 +1,6 @@
-import cv2
-import torch
-import numpy as np
 from pathlib import Path
 import argparse
+import os
 # ============================================================
 # ARGUMENTY
 # ============================================================
@@ -18,9 +16,26 @@ INPUT_DIR = Path(args.i)
 # ============================================================
 # KONFIGURACJA
 # ============================================================
-MODEL_PATH = Path(
-    r"D:\AI3d\models\moge-3-vitl.pt"
-)
+
+model_path = os.environ.get("MOGE_MODEL_PATH")
+
+if not model_path:
+    raise RuntimeError(
+        "Brak zmiennej środowiskowej MOGE_MODEL_PATH. Powinna zawierać lokalizację modelu MoGe-3, np. plik moge-3-vitl.pt"
+        "\nUpewnij się, że masz pobrany model i ustaw MOGE_MODEL_PATH na katalog zawierający model."
+        "\n\tNp. set MOGE_MODEL_PATH=D:\\AI\\models\\moge3"
+        "\n\n Po ustawieniu MOGE_MODEL_PATH uruchom ponownie terminal."
+    )
+
+MODEL_PATH = Path(model_path)
+
+if not MODEL_PATH.exists():
+    raise FileNotFoundError(f"Nie znaleziono modelu: {MODEL_PATH}")
+
+import cv2
+import torch
+import numpy as np
+    
 DEVICE = "cuda"
 USE_FP16 = True
 REFINE_STEPS = 3

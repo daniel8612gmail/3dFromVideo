@@ -1,17 +1,22 @@
 # 3D From Video
 
-Projekt z obszaru generowania modeli 3D z danych wizualnych. Aktualnie system jest w wersji beta i działa w praktyce: umożliwia przygotowanie modelu GLB na podstawie pojedynczego zdjęcia. W kolejnej fazie rozwoju planowane jest rozszerzenie działania na materiał wideo, gdzie klatki będą analizowane sekwencyjnie i łączone w spójny model 3D. Dziłąnie można sprawdzić na https://img3d.pcmagic.pl
+Projekt z obszaru generowania modeli 3D z danych wizualnych. Umożliwia przygotowanie modelu GLB na podstawie pojedynczego zdjęcia. 
+
+Tworzone modele 3D mają być możliwie proste i lekkie z zachowaniem płaszczyzn i pominięciem małych nieistotnych elementów oraz skomplikowanych kształtów, tak aby odtworzyć elementy architektury i główne elementy otaczającego świata.
+
+Działanie systemu można sprawdzić na https://img3d.pcmagic.pl
 
 ## Status projektu
 
-- Status: beta
 - Obecny tryb: generowanie modelu GLB ze zdjęcia
 - Plan rozwoju: generowanie modelu GLB z filmu
 - Główne obszary: front-end webowy, połączenie z agentem AI, pipeline przygotowania geometrii i eksportu GLB
 
+W kolejnej fazie rozwoju planowane jest rozszerzenie działania na materiał wideo, gdzie klatki będą analizowane sekwencyjnie i łączone w spójny model 3D. 
+
 ## Cel projektu
 
-Celem projektu jest stworzenie kompletnego systemu do przetwarzania obrazów i wideo w celu:
+Celem projektu jest stworzenie kompletnego systemu do tworzenia modeli 3D o małym rozmiarze, które możn a będzie załadować na dużej liczbie urządzeń, w przeciwieństwie do popularnych chmór punktów.
 
 - wykrywania obiektów i geometrii z obrazu,
 - przygotowywania danych wejściowych dla modeli 3D,
@@ -107,6 +112,7 @@ Katalog system/img3d_ws odpowiada za:
 - zapis końcowego wyniku do katalogu sesji.
 
 ### Agent AI
+Agent jest to program przetwarzający zdjęcia. Odbiera zdjęcia z serwera. Działa w kilku etapach i przekazuje wykonany przez siebie model 3D na serwer. Może być uruchomiony na dowolnej maszynie z odpowiednią mocą obliczeniową dla modeli AI. Obecnie używa modelu sztucznej inteligencji MoGe-3 w celu wydobycia głębi i informacji o kierunku każdego z piksela obrazu.
 
 Katalog system/img3d_ws_agent realizuje połączenie z serwerem i uruchamianie pipeline:
 
@@ -117,6 +123,29 @@ Katalog system/img3d_ws_agent realizuje połączenie z serwerem i uruchamianie p
 - wysyła postęp wykonania,
 - zwraca wynik GLB do serwera.
 
+#### Instalacja
+1. w katalogu img3d_ws_agent uruchom:
+``` text
+npm install
+```
+
+2. Zainstaluj Visual Studio Build Tools for C++ https://visualstudio.microsoft.com/visual-cpp-build-tools/
+   Uruchom pobrany instalator.
+   W zakładce Workloads zaznacz:
+   - Desktop development with C++
+   czyli Programowanie aplikacji klasycznych w języku C++.
+
+   - Po prawej stronie upewnij się, że zaznaczone są przynajmniej:
+      
+      - MSVC v143 - VS 2022 C++ x64/x86 build tools
+      - Windows 11 SDK albo Windows 10 SDK
+      - C++ CMake tools for Windows 
+3. Zainstaluj MoGe-3: https://github.com/microsoft/MoGe
+
+   Na chwilę pisania dokumentacji są to komendy:
+   ``` text
+   pip install git+https://github.com/microsoft/MoGe.git
+   ```
 ### Python pipeline
 
 W katalogu system/py znajdują się narzędzia odpowiedzialne za:
