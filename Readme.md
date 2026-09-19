@@ -146,6 +146,19 @@ npm install
    ``` text
    pip install git+https://github.com/microsoft/MoGe.git
    ```
+4. Ustawienie Ścieżki do modelu Moge-3:
+``` text
+przykład dla CMD:
+set MOGE_MODEL_PATH=D:\AI3d\models\moge-3-vitl.pt
+
+przykład dls PS
+$env:MOGE_MODEL_PATH="C:\AI\model\moge-3-vitl.pt"
+(działa do zamknięcia konsoli)
+```
+Po zmianie konieczny restart terminala
+
+5. Zainstaluj: py torch
+
 ### Python pipeline
 
 W katalogu system/py znajdują się narzędzia odpowiedzialne za:

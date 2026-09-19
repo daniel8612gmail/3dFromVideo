@@ -93,6 +93,7 @@ function dispatchJob(sessionId, agentId, agent) {
   state.status = 'processing';
   state.progress = 0;
   state.jobId = jobId;
+  state.agent = agentId;
 
   writeState(sessionId, state);
 

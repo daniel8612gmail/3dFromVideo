@@ -16,7 +16,7 @@ const wss = new WebSocket.Server({
   maxPayload: 200 * 1024 * 1024,
 });
 
-log(`WebSocket server uruchomiony na ws://${HOST}:${PORT} v20240918.2131`);
+log(`WebSocket server uruchomiony na ws://${HOST}:${PORT} v20240919.2131`);
 
 // ==================================================
 // POŁĄCZENIE AGENTA

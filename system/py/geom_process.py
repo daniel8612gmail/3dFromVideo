@@ -78,7 +78,7 @@ def process(image_path, data, logEnabled=False):
     image = cv2.imread(str(image_path))
     
     if logEnabled:
-        logtime("Ładowanie klatki")
+        logtime("Ladowanie klatki")
     # DEBUG image
         
     # ============================================================
@@ -163,7 +163,7 @@ def process(image_path, data, logEnabled=False):
     )
     if logEnabled:
         logtime("find_plane_groups")    
-        print(f"Liczba rozpoznanych płaszczyzn: {len(plane_labels)}")
+        print(f"Liczba rozpoznanych plaszczyzn: {len(plane_labels)}")
     #===========================================================
     # Sort and filter planes
     # wybranie największych płaszczyzn
@@ -270,7 +270,7 @@ def main():
     )
 
     print(f"Images found: {len(images)}")
-    logtime("Przygotowywanie zdjęć")
+    logtime("Przygotowywanie zdjec")
     
     for image_path in images:
 

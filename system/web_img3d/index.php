@@ -234,6 +234,7 @@ file_put_contents(
         }
 
         .new-session {
+            display: none;
             background: #555;
             margin-left: 10px;
         }
@@ -243,6 +244,7 @@ file_put_contents(
         }
 
         .status {
+            display: none;
             margin-top: 20px;
             padding: 15px;
             border-radius: 8px;
@@ -319,6 +321,8 @@ file_put_contents(
     <div class="container">
 
         <h1>Image → 3D</h1>
+        <p>System przeznaczony do generowania modelu 3D dla elementów architektury z pojedyńczego zdjęcia.</p>
+        <p>Jego celem jest wyszukanie dominujących płaszczyzn z pominięciem nieregularnych obiektów i stworzenie lekkiego modelu geometrycznego na podstawie odnalezionych płaszczyzn.</p>
 
         <div class="session-info">
 
@@ -337,7 +341,7 @@ file_put_contents(
         <div class="upload-section">
 
             <label for="photoInput" class="button" id="uploadButton">
-                Przekaż zdjęcie
+                Wczytaj zdjęcie z urządzenia
             </label>
 
             <input type="file" id="photoInput" accept="image/jpeg,image/png,image/webp">
@@ -350,7 +354,7 @@ file_put_contents(
 
         </div>
 
-        <div class="status">
+        <div class="status" id="status-container">
 
             <div>
                 <strong>Status:</strong>
@@ -1267,7 +1271,7 @@ file_put_contents(
                         ),
                         'KB'
                     );
-
+                    document.querySelector('.status').style.display = 'block';
                     setStatus(
                         'wysyłanie',
                         0
