@@ -312,6 +312,25 @@ file_put_contents(
             color: #555;
             font-size: 14px;
         }
+
+        .image-preview {
+            display: none;
+            margin-top: 15px;
+            max-width: 520px;
+            padding: 10px;
+            background: #f7f7f7;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+        }
+
+        .image-preview img {
+            display: block;
+            max-width: 100%;
+            max-height: 420px;
+            border-radius: 6px;
+            object-fit: contain;
+            background: #eee;
+        }
     </style>
 
 </head>
@@ -351,6 +370,10 @@ file_put_contents(
             </button>
 
             <div class="filename" id="filename"></div>
+
+            <div class="image-preview" id="imagePreviewWrapper">
+                <img id="imagePreview" alt="Podgląd załadowanego zdjęcia">
+            </div>
 
         </div>
 
@@ -437,6 +460,12 @@ file_put_contents(
 
         const filenameElement =
             document.getElementById('filename');
+
+        const imagePreviewWrapper =
+            document.getElementById('imagePreviewWrapper');
+
+        const imagePreview =
+            document.getElementById('imagePreview');
 
         const statusText =
             document.getElementById('statusText');
@@ -531,6 +560,21 @@ file_put_contents(
 
             errorBox.style.display =
                 'none';
+        }
+
+
+        let currentPreviewUrl = null;
+
+
+        function clearImagePreview() {
+
+            if (currentPreviewUrl) {
+                URL.revokeObjectURL(currentPreviewUrl);
+                currentPreviewUrl = null;
+            }
+
+            imagePreview.src = '';
+            imagePreviewWrapper.style.display = 'none';
         }
 
 
@@ -1048,7 +1092,7 @@ file_put_contents(
                 );
 
                 showError(
-                    'Nie udało się pobrać modelu GLB.'
+                    'Nie udało się pobrać modelu GLB. Czasami tak się zdarza :( Spróbuj ponownie.'
                 );
             }
         }
@@ -1108,10 +1152,8 @@ file_put_contents(
 
                 filenameElement.textContent =
                     'Wybrano: ' + file.name;
+                filenameElement.style.display = 'block';
 
-                /*
-                 * Dozwolone typy.
-                 */
                 const allowedTypes = [
                     'image/jpeg',
                     'image/png',
@@ -1120,6 +1162,7 @@ file_put_contents(
 
                 if (!allowedTypes.includes(file.type)) {
 
+                    clearImagePreview();
                     showError(
                         'Nieprawidłowy typ pliku. ' +
                         'Wybierz JPG, PNG lub WEBP.'
@@ -1127,9 +1170,18 @@ file_put_contents(
 
                     photoInput.value = '';
                     filenameElement.textContent = '';
+                    filenameElement.style.display = 'none';
 
                     return;
                 }
+
+                if (currentPreviewUrl) {
+                    URL.revokeObjectURL(currentPreviewUrl);
+                }
+
+                currentPreviewUrl = URL.createObjectURL(file);
+                imagePreview.src = currentPreviewUrl;
+                imagePreviewWrapper.style.display = 'block';
 
                 /*
                  * Maksymalny rozmiar oryginalnego pliku:
@@ -1140,6 +1192,7 @@ file_put_contents(
 
                 if (file.size > maxSize) {
 
+                    clearImagePreview();
                     showError(
                         'Plik jest za duży. ' +
                         'Maksymalny rozmiar to 20 MB.'
@@ -1147,6 +1200,7 @@ file_put_contents(
 
                     photoInput.value = '';
                     filenameElement.textContent = '';
+                    filenameElement.style.display = 'none';
 
                     return;
                 }
