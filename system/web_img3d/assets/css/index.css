@@ -1,0 +1,194 @@
+* {
+    box-sizing: border-box;
+}
+
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    background: #f5f5f5;
+    color: #222;
+}
+
+.container {
+    max-width: 1900px;
+    margin: 40px auto;
+    padding: 25px;
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+}
+
+.language-switcher {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 20px;
+}
+
+.language-switcher a {
+    display: inline-block;
+    padding: 8px 12px;
+    border: 1px solid #1976d2;
+    border-radius: 7px;
+    color: #1565c0;
+    font-weight: bold;
+    text-decoration: none;
+}
+
+.language-switcher a:hover,
+.language-switcher a:focus-visible {
+    background: #e8f2fc;
+}
+
+.language-switcher a[aria-current="page"] {
+    background: #1976d2;
+    color: white;
+}
+
+h1 {
+    margin-top: 0;
+}
+
+.session-info {
+    display: none;
+    padding: 15px;
+    background: #f0f0f0;
+    border-radius: 8px;
+    margin-bottom: 25px;
+}
+
+.session-info div {
+    margin: 5px 0;
+}
+
+.label {
+    font-weight: bold;
+}
+
+.upload-section {
+    margin: 25px 0;
+}
+
+#photoInput {
+    display: none;
+}
+
+.button {
+    display: inline-block;
+    border: 0;
+    border-radius: 7px;
+    padding: 12px 20px;
+    font-size: 16px;
+    cursor: pointer;
+    background: #1976d2;
+    color: white;
+}
+
+#uploadButton[hidden] {
+    display: none;
+}
+
+.button:hover {
+    background: #1565c0;
+}
+
+.button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.new-session {
+    display: none;
+}
+
+
+.status {
+    display: none;
+    margin-top: 20px;
+    padding: 15px;
+    border-radius: 8px;
+    background: #f0f0f0;
+}
+
+.progress-container {
+    margin-top: 10px;
+    height: 20px;
+    background: #ddd;
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.progress-bar {
+    height: 100%;
+    width: 0%;
+    background: #1976d2;
+    transition: width 0.3s ease;
+}
+
+.progress-text {
+    margin-top: 8px;
+}
+
+.error {
+    margin-top: 15px;
+    padding: 12px;
+    background: #fee;
+    border: 1px solid #d88;
+    color: #900;
+    border-radius: 7px;
+    display: none;
+}
+
+#viewer {
+    position: relative;
+    margin-top: 30px;
+    width: 100%;
+    height: 600px;
+    border-radius: 8px;
+    background: #eee;
+    overflow: hidden;
+    color: #777;
+}
+
+#viewer canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.viewer-message {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #777;
+    pointer-events: none;
+}
+
+.filename {
+    display: none;
+    margin-top: 10px;
+    color: #555;
+    font-size: 14px;
+}
+
+.image-preview {
+    display: none;
+    margin-top: 15px;
+    max-width: 520px;
+    padding: 10px;
+    background: #f7f7f7;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+}
+
+.image-preview img {
+    display: block;
+    max-width: 100%;
+    max-height: 420px;
+    border-radius: 6px;
+    object-fit: contain;
+    background: #eee;
+}
