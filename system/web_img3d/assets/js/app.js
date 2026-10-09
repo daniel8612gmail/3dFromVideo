@@ -10,6 +10,7 @@ const elements = {
     photoInput: document.getElementById('photoInput'),
     uploadButton: document.getElementById('uploadButton'),
     newSessionButton: document.getElementById('newSessionButton'),
+    downloadModelButton: document.getElementById('downloadModelButton'),
     sessionId: document.getElementById('sessionId'),
     createdOn: document.getElementById('createdOn'),
     filename: document.getElementById('filename'),
@@ -262,6 +263,7 @@ async function checkStatus() {
             elements.newSessionButton.style.display = 'inline-block';
 
             if (data.glb) {
+                elements.downloadModelButton.hidden = false;
                 await modelViewer.load(sessionId);
             }
             return;
@@ -284,6 +286,12 @@ function startNewSession() {
     url.searchParams.set('lang', language);
     sessionStorage.removeItem('img3d_session');
     window.location.assign(url);
+}
+
+function downloadModel() {
+    window.location.assign(
+        `get-glb.php?sessionId=${encodeURIComponent(sessionId)}&download=1`
+    );
 }
 
 async function restoreUploadedPhoto() {
@@ -359,6 +367,7 @@ function initializeSession() {
 
     elements.photoInput.addEventListener('change', handleFileSelection);
     elements.newSessionButton.addEventListener('click', startNewSession);
+    elements.downloadModelButton.addEventListener('click', downloadModel);
 
     restoreUploadedPhoto().catch((error) => {
         console.error('Could not restore uploaded photo:', error);
