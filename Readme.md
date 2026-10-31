@@ -194,6 +194,31 @@ Do uruchomienia projektu potrzebne są:
 - serwer web / proxy / WebSocket (w zależności od środowiska wdrożeniowego)
 - odpowiednia konfiguracja agentów i tokenów dostępu
 
+## Zespół agentów Copilot
+
+W katalogu `.github/agents/` znajdują się współdzielone definicje agentów Copilot, którzy wspierają rozwój projektu w odrębnych rolach. To asystenci pracujący nad kodem i decyzjami projektowymi, a nie procesy workerów uruchamiane przez aplikację podczas przetwarzania zdjęć.
+
+### Kontakt i koordynacja
+
+- `project-manager.agent.md` — manager projektu i główny punkt kontaktu. Przyjmuje zadania od użytkownika, dobiera role, koordynuje zależności, zbiera wyniki i przedstawia użytkownikowi rezultat wraz z weryfikacją. Przy większych zmianach rozpoczyna od architekta, angażuje analityka zależnie od potrzeb i zleca testerowi niezależną weryfikację.
+
+### Projektowanie i analiza
+
+- `architect.agent.md` — architekt rozwiązania. Rozpoznaje obecny przepływ, wyznacza granice komponentów, kontrakty i etapy wdrożenia oraz koordynuje analityka, developerów i testera przy zadaniach obejmujących kilka warstw.
+- `technical-analyst.agent.md` — analityk techniczny. Bada aktualnie dostępne modele AI, biblioteki, usługi i narzędzia; porównuje funkcje, integrację, wymagania sprzętowe, licencje, koszty oraz ryzyka na podstawie źródeł.
+
+### Implementacja
+
+- `ui-web.agent.md` — developer UI: PHP, JavaScript i CSS, upload, status sesji, komunikaty błędów oraz podgląd i pobieranie GLB.
+- `backend-developer.agent.md` — developer backendu Node.js: WebSocket, kolejka i sesje zadań, agenci wykonawczy oraz integracja z procesami Pythona.
+- `image-3d-processor.agent.md` — developer przetwarzania obrazu: Python, modele AI, geometria, kalibracja i eksport GLB.
+
+### Weryfikacja
+
+- `tester.agent.md` — tester. Dobiera i uruchamia testy do kryteriów akceptacji, sprawdza istotne kontrakty między komponentami oraz raportuje wyniki i ograniczenia środowiska.
+
+Użytkownik może kontaktować się bezpośrednio z `3D From Video - Project Manager`, wybierając tę rolę w selektorze agentów Copilot. Manager prowadzi zadanie od ustalenia celu przez dobór specjalistów po zebranie wyników. Przy większej zmianie architekt przygotowuje plan, analityk dostarcza udokumentowane porównanie technologii, developerzy implementują swoje części, a tester niezależnie weryfikuje kryteria akceptacji. Przy małych zmianach manager angażuje tylko potrzebną rolę.
+
 ## Uruchomienie
 
 W katalogu głównym projektu:

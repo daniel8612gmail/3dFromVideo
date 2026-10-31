@@ -132,7 +132,7 @@ function getTranslations(string $language): array
             ],
             'roadmap_eyebrow' => 'Kierunki prac',
             'roadmap_title' => 'Technologia w rozwoju',
-            'roadmap_description' => 'Możliwe obszary dalszych eksperymentów — bez deklarowania terminów ani dostępności funkcji.',
+            'roadmap_description' => 'Możliwe obszary dalszych eksperymentów.',
             'roadmap_items' => [
                 'Lepsze wykrywanie płaszczyzn',
                 'Obsługa bardziej złożonych elementów architektury',
