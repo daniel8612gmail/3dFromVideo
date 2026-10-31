@@ -219,6 +219,10 @@ W katalogu `.github/agents/` znajdują się współdzielone definicje agentów C
 
 Użytkownik może kontaktować się bezpośrednio z `3D From Video - Project Manager`, wybierając tę rolę w selektorze agentów Copilot. Manager prowadzi zadanie od ustalenia celu przez dobór specjalistów po zebranie wyników. Przy większej zmianie architekt przygotowuje plan, analityk dostarcza udokumentowane porównanie technologii, developerzy implementują swoje części, a tester niezależnie weryfikuje kryteria akceptacji. Przy małych zmianach manager angażuje tylko potrzebną rolę.
 
+## Dokumentacja
+
+- [Dokumentacja architektury i aktualnego przepływu](doc/architecture.md) — przegląd komponentów, przepływu zdjęcia do GLB, kontraktów plikowych, wymagań oraz bieżącego statusu obsługi wideo.
+
 ## Uruchomienie
 
 W katalogu głównym projektu:
