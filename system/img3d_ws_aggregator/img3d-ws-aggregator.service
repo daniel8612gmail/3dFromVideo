@@ -1,0 +1,21 @@
+[Unit]
+Description=Image 3D GLB Aggregator Agent
+After=network-online.target img3d-ws.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/img3d-ws-aggregator
+EnvironmentFile=/etc/img3d-ws-aggregator.env
+ExecStart=/usr/bin/node /opt/img3d-ws-aggregator/agent.js
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

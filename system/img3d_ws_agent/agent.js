@@ -1,9 +1,12 @@
 require("dotenv").config();
 const runPython = require("./runPython");
+const glbOutputPath = require("./glbOutputPath");
+const pythonInputArgs = require("./pipelineArgs");
 
 const WebSocket = require("ws");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { spawn } = require("child_process");
 
 // ============================================================
@@ -99,7 +102,22 @@ function connect() {
       };
 
       try {
-        await processJob(job.jobId, imageBuffer, job.sessionId, job.filename);
+        if (imageBuffer.length !== job.size) {
+          throw new Error("Odebrany rozmiar obrazu nie odpowiada metadanym joba.");
+        }
+        if (job.jobType === "system_frame"
+          && crypto.createHash("sha256").update(imageBuffer).digest("hex") !== job.sha256) {
+          throw new Error("SHA-256 obrazu nie odpowiada zadaniu systemowemu.");
+        }
+        await processJob(
+          job.jobId,
+          imageBuffer,
+          job.sessionId,
+          job.filename,
+          job.jobType || "legacy",
+          job.systemSessionId,
+          job.frameId,
+        );
       } catch (error) {
         console.error("");
         console.error(`Błąd podczas wykonywania job ${job.jobId}:`);
@@ -109,6 +127,11 @@ function connect() {
         send({
           type: "error",
           jobId: job.jobId,
+          ...(job.jobType === "system_frame" ? {
+            jobType: "system_frame",
+            systemSessionId: job.systemSessionId,
+            frameId: job.frameId,
+          } : {}),
           error: error.message || String(error),
         });
       } finally {
@@ -168,10 +191,28 @@ async function handleMessage(message) {
         return;
       }
 
+      if (message.jobType === "system_frame"
+        && (!/^[a-f0-9]{32}$/.test(message.systemSessionId || "")
+          || !/^[A-Za-z0-9_-]{1,96}$/.test(message.frameId || ""))) {
+        console.error("Odrzucono nieprawidłowy identyfikator zadania systemowego.");
+        return;
+      }
+      if (message.jobType !== undefined && message.jobType !== "system_frame") {
+        console.error("Odrzucono nieznany jobType.");
+        return;
+      }
+      if (!Number.isSafeInteger(message.size) || message.size < 1 || message.size > 20 * 1024 * 1024) {
+        console.error("Odrzucono nieprawidłowy rozmiar obrazu.");
+        return;
+      }
       currentJob = {
         jobId: message.jobId,
         sessionId: message.sessionId,
+        jobType: message.jobType || "legacy",
+        systemSessionId: message.systemSessionId,
+        frameId: message.frameId,
         filename: message.filename,
+        sha256: message.sha256,
         size: message.size,
         imageBuffer: null,
       };
@@ -181,11 +222,26 @@ async function handleMessage(message) {
       console.log("NOWE ZADANIE");
       console.log("========================================");
       console.log(`Job:      ${message.jobId}`);
-      console.log(`Session:  ${message.sessionId}`);
+      console.log(`Session:  ${message.systemSessionId || message.sessionId}`);
+      if (message.jobType === "system_frame") {
+        console.log(`Frame:    ${message.frameId}`);
+      }
       console.log(`Filename: ${message.filename}`);
       console.log(`Size:     ${message.size}`);
       console.log("Oczekiwanie na zdjęcie...");
       console.log("========================================");
+
+      break;
+
+    case "aggregation_started":
+      if (message.jobType === "system_frame"
+        && /^[a-f0-9]{32}$/.test(message.systemSessionId || "")
+        && /^[A-Za-z0-9_-]{1,96}$/.test(message.frameId || "")) {
+        console.log(
+          `Serwer agreguje ${message.systemSessionId}/${message.frameId}`
+          + ` przez ${message.aggregator || "nieznany agregator"}.`,
+        );
+      }
 
       break;
 
@@ -216,12 +272,17 @@ function send(message) {
 // RAPORTOWANIE PROGRESSU
 // ============================================================
 
-async function setProgress(jobId, progress, stage = null, text = "") {
+async function setProgress(jobId, progress, stage = null, text = "", jobContext = null) {
   const message = {
     type: "progress",
     jobId,
     progress,
   };
+  if (jobContext && jobContext.jobType === "system_frame") {
+    message.jobType = "system_frame";
+    message.systemSessionId = jobContext.systemSessionId;
+    message.frameId = jobContext.frameId;
+  }
 
   if (stage !== null) {
     message.stage = stage;
@@ -235,7 +296,7 @@ async function setProgress(jobId, progress, stage = null, text = "") {
   console.log(`[${jobId}] ${progress}%` + (stage ? ` — ${stage}` : ""));
 }
 
-function sendLog(jobId, message) {
+function sendLog(jobId, message, context = null) {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     return;
   }
@@ -244,6 +305,11 @@ function sendLog(jobId, message) {
     JSON.stringify({
       type: "progress",
       jobId,
+      ...(context && context.jobType === "system_frame" ? {
+        jobType: "system_frame",
+        systemSessionId: context.systemSessionId,
+        frameId: context.frameId,
+      } : {}),
       message,
     }),
   );
@@ -253,7 +319,7 @@ function sendLog(jobId, message) {
 // GŁÓWNY PIPELINE
 // ============================================================
 
-async function processJob(jobId, imageBuffer, sessionId, filename) {
+async function processJob(jobId, imageBuffer, sessionId, filename, jobType = "legacy", systemSessionId = null, frameId = null) {
   console.log("");
   console.log(`Rozpoczynam przetwarzanie: ${jobId}`);
 
@@ -261,10 +327,13 @@ async function processJob(jobId, imageBuffer, sessionId, filename) {
     jobId,
     sessionId,
     filename,
-    log: (message) => sendLog(jobId, message),
+    jobType,
+    systemSessionId,
+    frameId,
+    log: (message) => sendLog(jobId, message, { jobType, systemSessionId, frameId }),
   };
 
-  await setProgress(jobId, 0, "starting");
+  await setProgress(jobId, 0, "starting", "", context);
 
   let data = imageBuffer;
 
@@ -274,7 +343,7 @@ async function processJob(jobId, imageBuffer, sessionId, filename) {
 
     data = await step.run(data, context);
 
-    await setProgress(jobId, step.progress, step.stage);
+    await setProgress(jobId, step.progress, step.stage, "", context);
   }
 
   if (!Buffer.isBuffer(data)) {
@@ -282,8 +351,14 @@ async function processJob(jobId, imageBuffer, sessionId, filename) {
   }
 
   send({
-    type: "ready_for_glb",
+    type: jobType === "system_frame" ? "ready_for_frame_glb" : "ready_for_glb",
     jobId,
+    ...(jobType === "system_frame" ? {
+      jobType,
+      systemSessionId,
+      frameId,
+      conventionSidecar: context.conventionSidecar,
+    } : {}),
   });
 
   ws.send(data);
@@ -361,15 +436,24 @@ const pipeline = [
 //
 // ============================================================
 
+function workingSessionDir(context) {
+  if (context.jobType === "system_frame") {
+    if (!/^[a-f0-9]{32}$/.test(context.systemSessionId || "")
+      || !/^[A-Za-z0-9_-]{1,96}$/.test(context.frameId || "")) {
+      throw new Error("Nieprawidłowy identyfikator systemSessionId/frameId.");
+    }
+    return path.join(AGENT_DATA_DIR, "system-sessions", context.systemSessionId, "frames", context.frameId);
+  }
+  if (!/^[a-f0-9]{32}$/.test(context.sessionId || "")) {
+    throw new Error(`Nieprawidłowy sessionId: ${context.sessionId}`);
+  }
+  return path.join(AGENT_DATA_DIR, context.sessionId);
+}
+
 async function prepareImage(imageBuffer, context) {
   console.log(`prepareImage(): ${imageBuffer.length} bajtów`);
 
   const { sessionId, filename } = context;
-
-  // sessionId z serwera musi być dokładnie 32 znakami hex
-  if (!/^[a-f0-9]{32}$/.test(sessionId)) {
-    throw new Error(`Nieprawidłowy sessionId: ${sessionId}`);
-  }
 
   // Dopuszczamy tylko nasze rozszerzenia.
   const extension = path.extname(filename).toLowerCase();
@@ -378,13 +462,14 @@ async function prepareImage(imageBuffer, context) {
     throw new Error(`Nieprawidłowe rozszerzenie obrazu: ${extension}`);
   }
 
-  const sessionDir = path.join(AGENT_DATA_DIR, sessionId);
+  const sessionDir = workingSessionDir(context);
 
   await fs.promises.mkdir(sessionDir, {
     recursive: true,
   });
 
-  const imagePath = path.join(sessionDir, `photo${extension}`);
+  const imageName = context.jobType === "system_frame" ? "frame" : "photo";
+  const imagePath = path.join(sessionDir, `${imageName}${extension}`);
 
   await fs.promises.writeFile(imagePath, imageBuffer);
 
@@ -397,26 +482,25 @@ async function prepareImage(imageBuffer, context) {
 }
 
 async function runMoGe3(data, context) {
-  const sessionDir = path.join(AGENT_DATA_DIR, context.sessionId);
+  const sessionDir = workingSessionDir(context);
   console.log("Uruchamiam MoGe3:");
   console.log(`Katalog: ${sessionDir}`);
 
-  await runPython(context, "../py/ai_moge3.py", ["-i", sessionDir]);
+  await runPython(context, "../py/ai_moge3.py", pythonInputArgs(sessionDir, context));
 }
 
 async function generate3D(data, context) {
-  const sessionDir = path.join(AGENT_DATA_DIR, context.sessionId);
+  const sessionDir = workingSessionDir(context);
   console.log("Uruchamiam geom_process.py");
   console.log(`Katalog: ${sessionDir}`);
 
-  await runPython(context, "../py/geom_process.py", ["-i", sessionDir]);
+  await runPython(context, "../py/geom_process.py", pythonInputArgs(sessionDir, context));
 }
 
 async function exportGLB(data, context) {
-  const sessionDir = path.join(AGENT_DATA_DIR, context.sessionId);
+  const sessionDir = workingSessionDir(context);
 
-  const imageName = path.parse(context.filename).name;
-  const glbPath = path.join(sessionDir, imageName, `${imageName}_planes.glb`);
+  const glbPath = glbOutputPath(sessionDir, context.filename, context.jobType);
 
   context.log(`Export GLB: ${glbPath} `);
 
@@ -424,6 +508,33 @@ async function exportGLB(data, context) {
     const glb = await fs.promises.readFile(glbPath);
 
     context.log(`GLB wczytany: ${glb.length} bajtów`);
+
+    if (context.jobType === "system_frame") {
+      const sidecarPath = `${glbPath}.convention.json`;
+      const sidecarStat = await fs.promises.lstat(sidecarPath);
+      if (!sidecarStat.isFile() || sidecarStat.size < 1 || sidecarStat.size > 64 * 1024) {
+        throw new Error("Brak prawidłowego sidecara konwencji GLB.");
+      }
+      const [glbRealPath, sidecarRealPath] = await Promise.all([
+        fs.promises.realpath(glbPath),
+        fs.promises.realpath(sidecarPath),
+      ]);
+      if (path.dirname(glbRealPath) !== path.dirname(sidecarRealPath)) {
+        throw new Error("Sidecar konwencji nie znajduje się obok pliku GLB.");
+      }
+      let sidecar;
+      try {
+        sidecar = JSON.parse(await fs.promises.readFile(sidecarPath, "utf8"));
+      } catch (error) {
+        throw new Error(`Nie można odczytać sidecara konwencji GLB: ${error.message}`);
+      }
+      const glbSha256 = crypto.createHash("sha256").update(glb).digest("hex");
+      if (!sidecar || typeof sidecar !== "object" || Array.isArray(sidecar)
+        || sidecar.glbSha256 !== glbSha256) {
+        throw new Error("Sidecar konwencji nie odpowiada dokładnemu GLB.");
+      }
+      context.conventionSidecar = sidecar;
+    }
 
     return glb;
   } catch (error) {
@@ -455,16 +566,26 @@ function scheduleReconnect() {
 // ZAMKNIĘCIE CTRL+C
 // ============================================================
 
-process.on("SIGINT", () => {
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
   console.log("");
-  console.log("Zamykanie agenta...");
+  console.log(`Zamykanie agenta (${signal})...`);
 
   if (ws) {
     ws.close();
   }
 
+  await Promise.race([
+    runPython.terminateAll(),
+    new Promise((resolve) => setTimeout(resolve, 6000)),
+  ]);
   process.exit(0);
-});
+}
+
+let shuttingDown = false;
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 // ============================================================
 // START

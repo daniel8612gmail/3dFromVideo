@@ -20,6 +20,8 @@ from geom_rectangle_texture import create_rectangle_textures, save_rectangle_tex
 from geom_save_glb import save_rectangles_to_glb
 from save_glb import save_dominant_normal_pixels_to_glb
 
+REQUIRE_PROVENANCE = False
+
 def logtime(functionName, counterType="last_invoke"):
     global _last_logtime, _frame_time
 
@@ -229,11 +231,30 @@ def process(image_path, data, logEnabled=False):
     if logEnabled:
         logtime("Sorting planes")
     
+    output_glb = OUTPUT_DIR / f"{image_dir.name}_planes.glb"
+    convention_sidecar = Path(str(output_glb) + ".convention.json")
+    if REQUIRE_PROVENANCE:
+        try:
+            convention_sidecar.unlink(missing_ok=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"Cannot invalidate stale frame convention sidecar {convention_sidecar}: {exc}"
+            ) from exc
     save_rectangles_to_glb(
         rectangles,
         textures,
-        OUTPUT_DIR / f"{image_dir.name}_planes.glb",
+        output_glb,
     )
+    if REQUIRE_PROVENANCE:
+        from moge_convention import write_glb_sidecar_if_required
+
+        provenance_path = OUTPUT_DIR / "moge3.provenance.json"
+        sidecar_path = write_glb_sidecar_if_required(
+            output_glb,
+            provenance_path,
+            required=True,
+        )
+        print(f"Convention sidecar saved: {sidecar_path}")
     logtime("save_rectangles_to_glb")
 
 def main():
@@ -246,8 +267,15 @@ def main():
         type=Path,
         help="Katalog ze zdjęciami"
     )
+    parser.add_argument(
+        "--require-provenance",
+        action="store_true",
+        help="Require a verified convention sidecar for metric system-frame processing",
+    )
 
     args = parser.parse_args()
+    global REQUIRE_PROVENANCE
+    REQUIRE_PROVENANCE = args.require_provenance
     logtime("Wczytywanie bibliotek")
     input_dir = args.input
 

@@ -13,6 +13,16 @@ function loadAgents() {
     if (!config || typeof config.agents !== 'object' || config.agents === null) {
       throw new Error('Nieprawidłowy format agents.json.');
     }
+    for (const [agentId, agent] of Object.entries(config.agents)) {
+      if (!agent || typeof agent !== 'object' || typeof agent.token !== 'string' || !agent.token) {
+        throw new Error(`Nieprawidłowe dane autoryzacji agenta ${agentId}.`);
+      }
+      if (agent.role === 'aggregator'
+        && Object.entries(config.agents).some(([otherId, other]) =>
+          otherId !== agentId && other && other.token === agent.token)) {
+        throw new Error('Token agregatora musi być unikalny i różny od tokenu każdego workera.');
+      }
+    }
 
     return config.agents;
   } catch (error) {
@@ -39,9 +49,16 @@ function authenticateAgent(agentId, token) {
   return safeTokenCompare(token, config.token);
 }
 
+function getAgentRole(agentId) {
+  const config = authorizedAgents[agentId];
+  if (!config) return null;
+  return config.role === 'aggregator' ? 'aggregator' : 'worker';
+}
+
 function getIdleAgent() {
   for (const [agentId, agent] of agents) {
-    if (agent.authenticated && !agent.busy && agent.ws.readyState === WebSocket.OPEN) {
+    if (agent.authenticated && agent.role === 'worker'
+      && !agent.busy && agent.ws.readyState === WebSocket.OPEN) {
       return {
         agentId,
         agent,
@@ -52,13 +69,22 @@ function getIdleAgent() {
   return null;
 }
 
-function addAgent(agentId, ws) {
+function addAgent(agentId, ws, role = 'worker') {
   agents.set(agentId, {
     ws,
+    role,
     authenticated: true,
     busy: false,
     jobId: null,
   });
+}
+
+function getAggregatorAgent() {
+  for (const agent of agents.values()) {
+    if (agent.authenticated && agent.role === 'aggregator'
+      && agent.ws.readyState === WebSocket.OPEN) return agent;
+  }
+  return null;
 }
 
 function getAgent(agentId) {
@@ -76,8 +102,10 @@ function getAgents() {
 module.exports = {
   agents,
   authenticateAgent,
+  getAgentRole,
   reloadAgents,
   getIdleAgent,
+  getAggregatorAgent,
   addAgent,
   getAgent,
   removeAgent,

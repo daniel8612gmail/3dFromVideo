@@ -1,6 +1,6 @@
 # 3D From Video
 
-Projekt z obszaru generowania modeli 3D z danych wizualnych. Umożliwia przygotowanie modelu GLB na podstawie pojedynczego zdjęcia. 
+Projekt z obszaru generowania modeli 3D z danych wizualnych. Obsługuje generowanie GLB z pojedynczego zdjęcia oraz z serii zdjęć przypisanych do jednej sesji systemowej.
 
 Tworzone modele 3D mają być możliwie proste i lekkie z zachowaniem płaszczyzn i pominięciem małych nieistotnych elementów oraz skomplikowanych kształtów, tak aby odtworzyć elementy architektury i główne elementy otaczającego świata.
 
@@ -8,7 +8,8 @@ Działanie systemu można sprawdzić na https://img3d.pcmagic.pl
 
 ## Status projektu
 
-- Obecny tryb: generowanie modelu GLB ze zdjęcia
+- Obecne tryby: legacy generowanie GLB z pojedynczego zdjęcia oraz wielozdjęciowe sesje z równoległym przetwarzaniem klatek i osobnym agentem sumującym
+- Interfejs Android: kontrakt API jest opisany, aplikacja Android pozostaje poza zakresem repozytorium
 - Plan rozwoju: generowanie modelu GLB z filmu
 - Główne obszary: front-end webowy, połączenie z agentem AI, pipeline przygotowania geometrii i eksportu GLB
 
@@ -34,26 +35,29 @@ Projekt składa się z kilku warstw:
 
 2. Warstwa komunikacyjna / WebSocket
    - katalog: system/img3d_ws
-   - odpowiada za odbieranie zadań z front-endu, koordynację sesji, wysyłanie zdjęć do agenta AI oraz odbieranie wynikowego pliku GLB
-   - zarządza stanem sesji, postępem przetwarzania i kolejką zadań
+   - koordynuje sesje systemowe i równoległe zadania pojedynczych klatek, wysyła zdjęcia do workerów AI i przekazuje ukończone GLB do agregatora
+   - zapisuje postęp, kolejkę oraz trwały outbox przekazujący wyniki
 
 3. Agent AI / przetwarzanie
    - katalog: system/img3d_ws_agent
-   - agent odbiera zadania z serwera WebSocket,
-   - pobiera zdjęcie, uruchamia pipeline przetwarzania Python,
-   - eksportuje wynik w formacie GLB i zwraca go do systemu centralnego
+   - workery odbierają pojedyncze klatki, uruchamiają istniejący pipeline Python i zwracają GLB klatki
 
-4. Pipeline obróbki i AI
+4. Agent sumujący
+   - katalog: system/img3d_ws_aggregator
+   - osobny, uwierzytelniony proces WebSocket odbiera GLB ukończonych klatek
+   - uruchamia publisher Pythona, który scala geometrię i tekstury z modelem sesji oraz publikuje kolejną wersję GLB
+
+5. Pipeline obróbki i AI
    - katalog: system/py
    - zawiera skrypty do detekcji, mapowania geometrii, kalibracji, ekstrakcji konturów, przetwarzania mask, budowy płaszczyzn i eksportu modeli 3D
 
-5. Procesy pomocnicze i systemowe
+6. Procesy pomocnicze i systemowe
    - katalog: system
    - zawiera watchery, kalibrację, przetwarzanie wideo i mechanizmy uruchamiania aplikacji
 
 ## Obecny workflow działania
 
-Aktualnie system działa w następującym cyklu:
+Legacy workflow pojedynczego zdjęcia działa w następującym cyklu:
 
 1. Użytkownik przesyła zdjęcie przez frontend z katalogu system/web_img3d.
 2. PHP tworzy sesję i zapisuje stan w katalogu sesji.
@@ -64,6 +68,12 @@ Aktualnie system działa w następującym cyklu:
 7. Stan sesji i postęp operacji są odświeżane w czasie rzeczywistym.
 
 To jest obecnie funkcjonalna wersja beta i można ją traktować jako działający prototyp produktów typu Image-to-3D.
+
+### Sesja wielozdjęciowa
+
+API v1 pozwala utworzyć sesję systemową, przesyłać do niej zdjęcia z metadanymi pozy kamery, sprawdzać postęp i pobierać kolejne wersje modelu. Różne klatki mogą być przetwarzane równolegle przez workery. Pierwsza klatka (sequence 0) definiuje początek układu sesji; kolejne pozy są wyrażane względem niej. Osobny agent sumujący przyjmuje każdy ukończony GLB klatki i aktualizuje wersjonowany model główny.
+
+Szczegóły endpointów, metadanych i wdrożenia opisuje [kontrakt API sesji wielozdjęciowej](doc/multiphoto_api.md). Aplikacja Android nie jest częścią repozytorium.
 
 ## Katalogi projektu
 
@@ -78,6 +88,7 @@ To jest obecnie funkcjonalna wersja beta i można ją traktować jako działają
 │   ├── web_img3d/               # frontend aplikacji
 │   ├── img3d_ws/                # serwer WebSocket + job orchestration
 │   ├── img3d_ws_agent/          # agent AI po stronie wykonawczej
+│   ├── img3d_ws_aggregator/     # osobny agent sumujący GLB klatek
 │   ├── py/                      # skrypty AI / geometry / GLB export
 │   ├── calibration/
 │   └── ...
@@ -159,6 +170,14 @@ Po zmianie konieczny restart terminala
 
 5. Zainstaluj: py torch
 
+W zwykłym, legacy workflow pojedynczego zdjęcia wymagane jest `MOGE_MODEL_PATH`
+i działający MoGe-3 — nie są wymagane zmienne `MOGE_EXPECTED_CODE_REVISION`
+ani `MOGE_EXPECTED_CHECKPOINT_SHA256`. Worker przekazuje flagę
+`--require-provenance` do skryptów Python wyłącznie dla zadań `system_frame`;
+ten tryb multi-photo fail-closed wymaga obu pinów w workerze i po stronie
+agregatora, a także zapisuje convention sidecar obok GLB. Nie uruchamiaj
+skryptów z tą flagą dla legacy zadań image→GLB.
+
 ### Python pipeline
 
 W katalogu system/py znajdują się narzędzia odpowiedzialne za:
@@ -222,6 +241,7 @@ Użytkownik może kontaktować się bezpośrednio z `3D From Video - Project Man
 ## Dokumentacja
 
 - [Dokumentacja architektury i aktualnego przepływu](doc/architecture.md) — przegląd komponentów, przepływu zdjęcia do GLB, kontraktów plikowych, wymagań oraz bieżącego statusu obsługi wideo.
+- [Kontrakt API sesji wielozdjęciowej](doc/multiphoto_api.md) — endpointy sesji i klatek, metadane ARCore, status, wersjonowane modele GLB oraz integracja workerów.
 
 ## Uruchomienie
 
@@ -263,7 +283,7 @@ Planowane etapy:
 
 ## Podsumowanie
 
-To repozytorium jest prototypem systemu do generowania modeli 3D z obrazów i filmów. W obecnym stanie działa jako działająca wersja beta służąca do generowania GLB z pojedynczego zdjęcia. Rozwój będzie kontynuowany w kierunku pełnego modelu z filmu, z wykorzystaniem istniejącej architektury front-end + WebSocket + agent AI + pipeline Python.
+To repozytorium jest prototypem systemu do generowania modeli 3D z obrazów i filmów. Oprócz legacy generowania GLB z pojedynczego zdjęcia zawiera wielozdjęciowy przepływ sesji z równoległymi workerami i osobnym agentem sumującym. Rozwój przetwarzania bezpośrednio z filmu pozostaje dalszym kierunkiem prac.
 
 ## Licencja
 

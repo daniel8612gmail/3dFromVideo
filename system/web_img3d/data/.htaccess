@@ -1,12 +1,16 @@
-# ============================================================
-# Blokada bezpośredniego dostępu do katalogu data/
-# ============================================================
+# Block direct reads and execution of uploaded/session data (including v1
+# system-sessions). This is an .htaccess context, so Directory is not used.
+Options -Indexes
 
 <IfModule mod_authz_core.c>
+    Require all denied
+</IfModule>
 
-    # Apache 2.4+
-    <Directory "data">
-        Require all denied
-    </Directory>
+<IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+</IfModule>
 
+<IfModule mod_php.c>
+    php_flag engine off
 </IfModule>

@@ -8,8 +8,9 @@
   },
   "scripts": {
     "test": "node test/test-ws.js",
-    "start": "node server.js",
-    "build": "esbuild src/server.js --bundle --platform=node --target=node20 --outfile=build/server.js"
+    "start": "node src/server.js",
+    "build": "esbuild src/server.js --bundle --platform=node --target=node20 --outfile=server.js",
+    "test:system": "node --test test/test-system-session-*.js"
   },
   "author": "Daniel Mieszkowski",
   "license": "ISC",

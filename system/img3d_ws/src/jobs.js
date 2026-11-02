@@ -11,10 +11,12 @@ const {
   logError,
   readState,
   writeState,
+  isValidSessionId,
   isValidPhotoFilename,
 } = require('./config');
 
 const { agents, getIdleAgent } = require('./agents');
+const systemSessionJobs = require('./system-session-jobs');
 
 // ==================================================
 // ZADANIA
@@ -31,6 +33,7 @@ const { agents, getIdleAgent } = require('./agents');
  */
 
 const jobs = new Map();
+systemSessionJobs.configureScan(scanPendingJobs);
 
 // ==================================================
 // WYSYŁANIE ZADANIA
@@ -159,6 +162,11 @@ function scanPendingJobs() {
     }
 
     const sessionId = entry.name;
+    // The v1 multi-frame API has its own nested root and is never a legacy
+    // one-photo session. Legacy session IDs are always 32 hexadecimal chars.
+    if (!isValidSessionId(sessionId)) {
+      continue;
+    }
     const state = readState(sessionId);
 
     if (!state || state.status !== 'uploaded') {
@@ -168,11 +176,13 @@ function scanPendingJobs() {
     const availableAgent = getIdleAgent();
 
     if (!availableAgent) {
-      return;
+      break;
     }
 
     dispatchJob(sessionId, availableAgent.agentId, availableAgent.agent);
   }
+
+  systemSessionJobs.scanPending(jobs);
 }
 
 // ==================================================
@@ -180,6 +190,10 @@ function scanPendingJobs() {
 // ==================================================
 
 function finishJob(job, glbBuffer) {
+  if (job.jobType === 'system_frame') {
+    return systemSessionJobs.finishFrame(job, glbBuffer, jobs, scanPendingJobs);
+  }
+
   const { jobId, sessionId, agentId } = job;
 
   const agent = agents.get(agentId);
@@ -274,6 +288,10 @@ function finishJob(job, glbBuffer) {
 // ==================================================
 
 function failJob(job, errorMessage) {
+  if (job.jobType === 'system_frame') {
+    return systemSessionJobs.failFrame(job, errorMessage, jobs, scanPendingJobs);
+  }
+
   const { jobId, sessionId, agentId } = job;
 
   const agent = agents.get(agentId);
@@ -328,6 +346,20 @@ function handleAgentDisconnect(agentId, agent) {
     const job = jobs.get(jobId);
 
     if (job) {
+      if (job.jobType === 'system_frame') {
+        if (job.outputReceived) {
+          // Once a valid binary frame output has entered the broker's
+          // synchronous durable-handoff path, do not requeue it on disconnect.
+          agents.delete(agentId);
+          return;
+        }
+        systemSessionJobs.disconnectAgent(job, jobs, scanPendingJobs);
+        jobs.delete(jobId);
+        agents.delete(agentId);
+        setImmediate(scanPendingJobs);
+        return;
+      }
+
       const state = readState(job.sessionId);
 
       if (state) {

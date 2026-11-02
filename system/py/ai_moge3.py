@@ -1,5 +1,7 @@
 from pathlib import Path
 import argparse
+import inspect
+import json
 import os
 # ============================================================
 # ARGUMENTY
@@ -10,8 +12,14 @@ parser.add_argument(
     required=True,
     help="Path to the input directory"
 )
+parser.add_argument(
+    "--require-provenance",
+    action="store_true",
+    help="Require pinned MoGe provenance for metric system-frame processing",
+)
 args = parser.parse_args()
 INPUT_DIR = Path(args.i)
+REQUIRE_PROVENANCE = args.require_provenance
 
 # ============================================================
 # KONFIGURACJA
@@ -35,7 +43,7 @@ if not MODEL_PATH.exists():
 import cv2
 import torch
 import numpy as np
-    
+
 DEVICE = "cuda"
 USE_FP16 = True
 REFINE_STEPS = 3
@@ -45,6 +53,24 @@ RESOLUTION_LEVEL = 9
 # IMPORT MOGE
 # ============================================================
 from moge.model import import_model_class_by_version
+
+MODEL_PROVENANCE = None
+if REQUIRE_PROVENANCE:
+    from moge_convention import (
+        ConventionError,
+        runtime_provenance_for_mode,
+        verify_canonical_orientation,
+        write_frame_provenance,
+    )
+
+    try:
+        MODEL_PROVENANCE = runtime_provenance_for_mode(
+            True,
+            MODEL_PATH,
+            inspect.getfile(import_model_class_by_version),
+        )
+    except ConventionError as exc:
+        raise RuntimeError(f"MoGe convention cannot be verified: {exc}") from exc
 
 # ============================================================
 # SPRAWDZENIE
@@ -216,8 +242,31 @@ for index, image_path in enumerate(
 ):
     output_dbg_path = INPUT_DIR / image_path.stem
     output_path = output_dbg_path / "moge3.pt"
+    provenance_path = output_dbg_path / "moge3.provenance.json"
+    orientation_provenance = None
+    if REQUIRE_PROVENANCE:
+        try:
+            orientation_provenance = verify_canonical_orientation(image_path)
+        except ConventionError as exc:
+            raise RuntimeError(f"Unsupported image orientation: {exc}") from exc
 
-    if output_path.exists():
+    cache_is_trusted = False
+    if REQUIRE_PROVENANCE and output_path.exists() and provenance_path.exists():
+        try:
+            cached_provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+            cache_is_trusted = (
+                cached_provenance.get("schemaVersion") == 1
+                and cached_provenance.get("modelVersion") == MODEL_PROVENANCE["modelVersion"]
+                and cached_provenance.get("codeRevision") == MODEL_PROVENANCE["codeRevision"]
+                and cached_provenance.get("checkpointSha256") == MODEL_PROVENANCE["checkpointSha256"]
+                and cached_provenance.get("verification") == MODEL_PROVENANCE["verification"]
+                and cached_provenance.get("canonicalOrientation") == orientation_provenance
+            )
+        except (OSError, json.JSONDecodeError, AttributeError):
+            cache_is_trusted = False
+    if (REQUIRE_PROVENANCE and cache_is_trusted) or (
+        not REQUIRE_PROVENANCE and output_path.exists()
+    ):
         print(
             f"[{index}/{len(image_paths)}] "
             f"{image_path.name} - skipped (already processed)"
@@ -333,6 +382,12 @@ for index, image_path in enumerate(
         parents=True,
         exist_ok=True
     )
+    if REQUIRE_PROVENANCE:
+        write_frame_provenance(
+            provenance_path,
+            MODEL_PROVENANCE,
+            orientation_provenance,
+        )
     
     # --------------------------------------------------------
     #   SNAP NORMALS

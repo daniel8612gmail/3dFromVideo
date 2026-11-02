@@ -13,7 +13,12 @@ const { jobs, scanPendingJobs, finishJob, failJob, handleAgentDisconnect } = req
 const wss = new WebSocket.Server({
   host: HOST,
   port: PORT,
-  maxPayload: 200 * 1024 * 1024,
+  maxPayload: (() => {
+    const configured = Number(process.env.MAX_WS_PAYLOAD_BYTES);
+    return Number.isSafeInteger(configured) && configured >= 1024 * 1024
+      ? Math.min(configured, 1024 * 1024 * 1024)
+      : 600 * 1024 * 1024;
+  })(),
 });
 
 log(`WebSocket server uruchomiony na ws://${HOST}:${PORT} v20240919.2131`);
@@ -25,6 +30,7 @@ log(`WebSocket server uruchomiony na ws://${HOST}:${PORT} v20240919.2131`);
 wss.on('connection', (ws) => {
   let authenticated = false;
   let agentId = null;
+  let agentRole = null;
   let currentBinaryJob = null;
 
   const authTimeout = setTimeout(() => {
@@ -45,7 +51,7 @@ wss.on('connection', (ws) => {
     // --------------------------------------------------
 
     if (isBinary) {
-      if (!authenticated) {
+      if (!authenticated || agentRole !== 'worker') {
         ws.close(1008, 'Not authenticated');
         return;
       }
@@ -63,6 +69,7 @@ wss.on('connection', (ws) => {
         return;
       }
 
+      job.outputReceived = true;
       finishJob(job, Buffer.from(message));
 
       currentBinaryJob = null;
@@ -88,6 +95,10 @@ wss.on('connection', (ws) => {
 
       return;
     }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      ws.send(JSON.stringify({ type: 'error', error: 'Wiadomość JSON musi być obiektem.' }));
+      return;
+    }
 
     // --------------------------------------------------
     // AUTH
@@ -100,8 +111,11 @@ wss.on('connection', (ws) => {
 
       const requestedAgentId = data.agentId;
       const token = data.token;
+      const requestedRole = require('./agents').getAgentRole(requestedAgentId);
 
-      if (!authenticateAgent(requestedAgentId, token)) {
+      if (!authenticateAgent(requestedAgentId, token)
+        || !requestedRole
+        || (data.role !== undefined && data.role !== requestedRole)) {
         log('Odrzucono autoryzację agenta: ' + `${requestedAgentId || '(brak ID)'}`);
 
         ws.close(1008, 'Unauthorized');
@@ -127,8 +141,9 @@ wss.on('connection', (ws) => {
 
       authenticated = true;
       agentId = requestedAgentId;
+      agentRole = requestedRole;
 
-      addAgent(agentId, ws);
+      addAgent(agentId, ws, agentRole);
 
       log(`Agent ${agentId} został autoryzowany.`);
 
@@ -136,10 +151,19 @@ wss.on('connection', (ws) => {
         JSON.stringify({
           type: 'auth_ok',
           agentId,
+          role: agentRole,
         }),
       );
 
-      scanPendingJobs();
+      if (agentRole === 'aggregator') {
+        try {
+          require('./system-session-jobs').dispatchNextAggregation(getAgent(agentId));
+        } catch (error) {
+          logError('Unable to dispatch durable aggregation outbox:', error.message);
+        }
+      } else {
+        scanPendingJobs();
+      }
 
       return;
     }
@@ -158,6 +182,16 @@ wss.on('connection', (ws) => {
     if (!agent) {
       return;
     }
+    if (agentRole === 'aggregator') {
+      try {
+        if (!require('./system-session-jobs').handleAggregationAck(agent, data)) {
+          logError(`Rejected invalid aggregation acknowledgement from ${agentId}.`);
+        }
+      } catch (error) {
+        logError(`Aggregation acknowledgement handler failed for ${agentId}:`, error.message);
+      }
+      return;
+    }
 
     // --------------------------------------------------
     // PROGRESS
@@ -169,8 +203,20 @@ wss.on('connection', (ws) => {
       if (!job || job.agentId !== agentId) {
         return;
       }
+      if (job.jobType === 'system_frame'
+        && (data.jobType !== 'system_frame'
+          || data.systemSessionId !== job.systemSessionId
+          || data.frameId !== job.frameId)) {
+        return;
+      }
 
       if (!Number.isInteger(data.progress) || data.progress < 0 || data.progress > 100) {
+        return;
+      }
+
+      if (job.jobType === 'system_frame') {
+        require('./system-session-jobs').updateProgress(job, data.progress, data);
+        log(`Agent ${agentId}: ${job.systemSessionId}/${job.frameId}: ${data.progress}%`);
         return;
       }
 
@@ -196,11 +242,33 @@ wss.on('connection', (ws) => {
     // AGENT CZEKA NA GLB
     // --------------------------------------------------
 
-    if (data.type === 'ready_for_glb') {
+    if (data.type === 'ready_for_glb' || data.type === 'ready_for_frame_glb') {
       const job = jobs.get(data.jobId);
 
       if (!job || job.agentId !== agentId) {
         return;
+      }
+      if ((job.jobType === 'system_frame'
+          && (data.type !== 'ready_for_frame_glb'
+            || data.jobType !== 'system_frame'
+            || data.systemSessionId !== job.systemSessionId
+            || data.frameId !== job.frameId))
+        || (job.jobType !== 'system_frame' && data.type !== 'ready_for_glb')) {
+        return;
+      }
+
+      if (job.jobType === 'system_frame') {
+        try {
+          if (Buffer.byteLength(JSON.stringify(data.conventionSidecar), 'utf8') > 64 * 1024) {
+            throw new Error('Worker convention sidecar exceeds the size limit.');
+          }
+          job.conventionSidecar = require('./system-session-jobs')
+            .validateConventionSidecar(data.conventionSidecar);
+          delete job.conventionError;
+        } catch (error) {
+          job.conventionSidecar = null;
+          job.conventionError = `Worker convention sidecar rejected: ${error.message}`;
+        }
       }
 
       currentBinaryJob = data.jobId;
@@ -216,6 +284,12 @@ wss.on('connection', (ws) => {
       const job = jobs.get(data.jobId);
 
       if (!job || job.agentId !== agentId) {
+        return;
+      }
+      if (job.jobType === 'system_frame'
+        && (data.jobType !== 'system_frame'
+          || data.systemSessionId !== job.systemSessionId
+          || data.frameId !== job.frameId)) {
         return;
       }
 
@@ -287,6 +361,15 @@ watcher.on('add', (filePath) => {
   if (!['.jpg', '.png', '.jpeg', '.webp'].some((ext) => normalizedPath.endsWith(ext))) {
     return;
   }
+  const relative = require('path').relative(DATA_DIR, filePath).replace(/\\/g, '/').split('/');
+  if (relative[0] === 'system-sessions'
+    && isValidSessionId(relative[1])
+    && /^[A-Za-z0-9_-]{1,96}$/.test(relative[3] || '')
+    && relative[2] === 'frames') {
+    log(`Wykryto zdjęcie klatki systemowej: ${relative[1]}/${relative[3]}`);
+    setTimeout(scanPendingJobs, 100);
+    return;
+  }
   console.log(`watcher.on('add' (${filePath})`);
   const sessionDir = require('path').dirname(filePath);
   const sessionId = require('path').basename(sessionDir);
@@ -323,7 +406,6 @@ function shutdown(signal) {
   log(`${signal} - zamykanie serwera...`);
 
   watcher.close();
-
   for (const [, agent] of getAgents()) {
     try {
       agent.ws.close(1001, 'Server shutdown');

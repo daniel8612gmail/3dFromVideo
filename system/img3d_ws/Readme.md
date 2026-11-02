@@ -55,6 +55,13 @@ Node.js odpowiada za:
 
 Node.js **nie potrzebuje własnego certyfikatu TLS**.
 
+Contract multi-frame v1 (including the authenticated aggregator-agent role,
+durable outbox, pose convention, publisher CLI boundary, and deployment steps)
+is documented in `doc/multiphoto_api.md`. The broker continues to use the
+legacy worker `job`/`ready_for_glb` protocol for single-image sessions; the
+aggregator credential must be a separate `role: "aggregator"` entry in
+`agents.json`.
+
 ---
 
 # 2. Wymagania

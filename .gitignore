@@ -4,9 +4,14 @@ users
 node_modules
 system/models
 test
+!system/img3d_ws/test/
+system/img3d_ws/test/*
+!system/img3d_ws/test/test-system-session-contract.js
 system/py/__pycache__
 *.log
 *.dmap
 system/img3d_ws/.env
 system/img3d_ws_agent/.env
 system/img3d_ws/build
+system/img3d_ws/server.js
+/system/web_img3d/data/system-sessions/

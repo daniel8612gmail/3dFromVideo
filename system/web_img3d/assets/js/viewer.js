@@ -10,12 +10,18 @@ export class ModelViewer {
         this.camera = null;
         this.renderer = null;
         this.controls = null;
+        this.model = null;
         this.animationFrame = null;
+        this.loadController = null;
+        this.loadToken = 0;
         this.handleResize = this.resize.bind(this);
     }
 
     initialize() {
-        this.dispose();
+        if (this.renderer) {
+            return;
+        }
+
         this.element.replaceChildren();
 
         this.scene = new THREE.Scene();
@@ -110,17 +116,29 @@ export class ModelViewer {
     }
 
     async load(sessionId) {
+        return this.loadUrl(
+            `get-glb.php?sessionId=${encodeURIComponent(sessionId)}`
+        );
+    }
+
+    async loadUrl(url) {
+        this.cancelPendingLoad();
+        const token = ++this.loadToken;
+        const controller = new AbortController();
+        this.loadController = controller;
         try {
-            const response = await fetch(
-                `get-glb.php?sessionId=${encodeURIComponent(sessionId)}`,
-                { method: 'GET', cache: 'no-store' }
-            );
+            const response = await fetch(url, {
+                method: 'GET',
+                cache: 'no-store',
+                signal: controller.signal
+            });
 
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}`);
             }
 
             const glbData = await response.arrayBuffer();
+            if (token !== this.loadToken) return false;
             this.initialize();
 
             const loader = new GLTFLoader();
@@ -128,21 +146,97 @@ export class ModelViewer {
                 loader.parse(glbData, '', resolve, reject);
             });
 
-            this.scene.add(gltf.scene);
-            this.fitToModel(gltf.scene);
+            if (token !== this.loadToken) {
+                this.disposeModel(gltf.scene);
+                return false;
+            }
+
+            if (!this.renderer) {
+                this.initialize();
+            }
+            if (this.model) {
+                this.scene.remove(this.model);
+                this.disposeModel(this.model);
+            }
+
+            this.model = gltf.scene;
+            this.scene.add(this.model);
+            this.fitToModel(this.model);
+            return true;
         } catch (error) {
+            if (error.name === 'AbortError' || token !== this.loadToken) return false;
             console.error('Could not load GLB model:', error);
             this.onError(error);
+            return false;
+        } finally {
+            if (token === this.loadToken) this.loadController = null;
         }
     }
 
+    cancelPendingLoad() {
+        this.loadToken += 1;
+        if (this.loadController) {
+            this.loadController.abort();
+            this.loadController = null;
+        }
+    }
+
+    disposeModel(model) {
+        const geometries = new Set();
+        const materials = new Set();
+        const textures = new Set();
+
+        const collectTextures = (value, visited = new Set()) => {
+            if (!value || typeof value !== 'object' || visited.has(value)) {
+                return;
+            }
+            if (value.isTexture) {
+                textures.add(value);
+                return;
+            }
+
+            visited.add(value);
+            for (const nestedValue of Object.values(value)) {
+                collectTextures(nestedValue, visited);
+            }
+        };
+
+        model.traverse((object) => {
+            if (object.geometry) {
+                geometries.add(object.geometry);
+            }
+
+            const objectMaterials = Array.isArray(object.material)
+                ? object.material
+                : object.material ? [object.material] : [];
+            for (const material of objectMaterials) {
+                if (!material) continue;
+                materials.add(material);
+                collectTextures(material);
+            }
+        });
+
+        for (const geometry of geometries) geometry.dispose();
+        for (const material of materials) material.dispose();
+        for (const texture of textures) texture.dispose();
+    }
+
     dispose() {
+        this.cancelPendingLoad();
+
+        if (this.model) {
+            if (this.scene) this.scene.remove(this.model);
+            this.disposeModel(this.model);
+            this.model = null;
+        }
+
         if (this.animationFrame !== null) {
             cancelAnimationFrame(this.animationFrame);
             this.animationFrame = null;
         }
 
         if (this.renderer) {
+            this.renderer.domElement.remove();
             this.renderer.dispose();
             this.renderer = null;
         }
@@ -152,6 +246,8 @@ export class ModelViewer {
             this.controls = null;
         }
 
+        this.scene = null;
+        this.camera = null;
         window.removeEventListener('resize', this.handleResize);
     }
 }

@@ -292,7 +292,7 @@ $escape = static function (string $value): string {
         <div class="img3d-shell">
             <div class="img3d-footer-main">
                 <div><a class="img3d-brand" href="#top"><span class="img3d-brand-mark" aria-hidden="true"><span></span><span></span><span></span></span><span>Image <i>→</i> 3D</span></a><p><?= $escape($text['footer_description']) ?></p></div>
-                <div class="img3d-footer-links"><strong><?= $escape($text['footer_navigation']) ?></strong><a href="#about"><?= $escape($text['nav_about']) ?></a><a href="#how-it-works"><?= $escape($text['nav_how']) ?></a><a href="#applications"><?= $escape($text['nav_applications']) ?></a><a href="#roadmap"><?= $escape($text['nav_roadmap']) ?></a><a href="#try"><?= $escape($text['try_app']) ?></a></div>
+                <div class="img3d-footer-links"><strong><?= $escape($text['footer_navigation']) ?></strong><a href="#about"><?= $escape($text['nav_about']) ?></a><a href="#how-it-works"><?= $escape($text['nav_how']) ?></a><a href="#applications"><?= $escape($text['nav_applications']) ?></a><a href="#roadmap"><?= $escape($text['nav_roadmap']) ?></a><a href="#try"><?= $escape($text['try_app']) ?></a><a href="multiphoto.php">Tryb wielozdjęciowy (dev)</a></div>
                 <div class="img3d-footer-links"><strong><?= $escape($text['footer_language']) ?></strong><a href="?lang=pl&amp;<?= $sessionQuery ?>" lang="pl" hreflang="pl">Polski</a><a href="?lang=en&amp;<?= $sessionQuery ?>" lang="en" hreflang="en">English</a></div>
             </div>
             <div class="img3d-footer-bottom"><span>© <?= date('Y') ?> Image → 3D</span><span>AN EXPERIMENTAL COMPUTER VISION PROJECT</span><a href="#top"><?= $escape($text['footer_top'] ?? '↑ Top') ?></a></div>
